@@ -17,9 +17,25 @@ def validate_record(rec: dict) -> None:
     line = rec["line"]
     if not isinstance(line, int) or isinstance(line, bool) or line < 1:
         raise SchemaError(f"line must be a positive int, got {line!r}")
-    if not str(rec["evidence"]).strip():
+
+    # Type-check all string fields
+    if not isinstance(rec["file"], str):
+        raise SchemaError(f"file must be a string, got {type(rec['file']).__name__}")
+    if not isinstance(rec["symbol"], str):
+        raise SchemaError(f"symbol must be a string, got {type(rec['symbol']).__name__}")
+    if not isinstance(rec["evidence"], str):
+        raise SchemaError(f"evidence must be a string, got {type(rec['evidence']).__name__}")
+
+    # Validate symbol is not empty after stripping
+    if not rec["symbol"].strip():
+        raise SchemaError("symbol cannot be empty; provide the actual symbol name")
+
+    # Validate evidence is not empty after stripping
+    if not rec["evidence"].strip():
         raise SchemaError("evidence is empty; quote the exact source line")
-    if str(rec["symbol"]) not in str(rec["evidence"]):
+
+    # Validate symbol appears in evidence
+    if rec["symbol"] not in rec["evidence"]:
         raise SchemaError(
             f"symbol {rec['symbol']!r} does not appear in evidence "
             f"{rec['evidence']!r} — a grep hit is not a verified citation"
@@ -34,8 +50,10 @@ def validate_message(msg: dict) -> None:
         raise SchemaError(
             f"unknown message type {msg['type']!r}; expected one of {sorted(MESSAGE_TYPES)}"
         )
-    if len(str(msg["body"])) > MAX_BODY:
+    if not isinstance(msg["body"], str):
+        raise SchemaError(f"body must be a string, got {type(msg['body']).__name__}")
+    if len(msg["body"]) > MAX_BODY:
         raise SchemaError(
-            f"body is {len(str(msg['body']))} chars; max {MAX_BODY}. "
+            f"body is {len(msg['body'])} chars; max {MAX_BODY}. "
             f"Write to a file and send a pointer."
         )
