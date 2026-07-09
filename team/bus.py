@@ -71,6 +71,8 @@ def alloc_id(root: Path) -> str:
     ids.mkdir(parents=True, exist_ok=True)
     taken = [int(p.name) for p in ids.iterdir() if ID_RE.fullmatch(p.name)]
     n = max(taken, default=0) + 1
+    if n > 999:
+        raise BusError("task id space exhausted (max 999 per bus); run `team down` and `team init`")
     while True:
         try:
             fd = os.open(ids / f"{n:03d}", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
@@ -78,6 +80,8 @@ def alloc_id(root: Path) -> str:
             return f"{n:03d}"
         except FileExistsError:
             n += 1
+            if n > 999:
+                raise BusError("task id space exhausted (max 999 per bus); run `team down` and `team init`")
 
 
 def task_path(root: Path, agent: str, tid: str) -> Path:

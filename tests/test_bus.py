@@ -64,6 +64,35 @@ class BusTest(unittest.TestCase):
         result = bus.alloc_id(self.root)
         self.assertEqual(result, "003")
 
+    def test_alloc_id_exhaustion_raises_at_999(self):
+        """With .team/ids/999 present, alloc_id raises BusError (id space exhausted)."""
+        ids = bus.team_dir(self.root) / "ids"
+        (ids / "999").touch()
+        with self.assertRaises(bus.BusError) as cm:
+            bus.alloc_id(self.root)
+        self.assertIn("exhausted", str(cm.exception))
+
+    def test_alloc_id_allows_999_as_last_valid_id(self):
+        """With .team/ids/998 present, alloc_id returns "999" (the last legal id is allocatable)."""
+        ids = bus.team_dir(self.root) / "ids"
+        (ids / "998").touch()
+        result = bus.alloc_id(self.root)
+        self.assertEqual(result, "999")
+
+    def test_alloc_id_exhaustion_with_sparse_ids(self):
+        """With .team/ids/999 and .team/ids/001 present, alloc_id raises (seed from max, not count)."""
+        ids = bus.team_dir(self.root) / "ids"
+        (ids / "001").touch()
+        (ids / "999").touch()
+        with self.assertRaises(bus.BusError) as cm:
+            bus.alloc_id(self.root)
+        self.assertIn("exhausted", str(cm.exception))
+
+    def test_alloc_id_empty_ids_yields_001(self):
+        """Regression: an empty .team/ids/ still yields '001'."""
+        result = bus.alloc_id(self.root)
+        self.assertEqual(result, "001")
+
     def test_open_task_none_when_result_sealed(self):
         bus.write_json(bus.task_path(self.root, "grunt1", "001"),
                        {"id": "001", "kind": "task"})
