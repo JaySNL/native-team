@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 TEAM = ".team"
-ID_RE = re.compile(r"\d{3}")
+ID_RE = re.compile(r"[0-9]{3}")
 
 
 class BusError(Exception):

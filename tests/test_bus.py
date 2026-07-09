@@ -117,6 +117,27 @@ class BusTest(unittest.TestCase):
         (inbox / "007.json").write_text(json.dumps({"kind": "task"}))
         self.assertEqual(bus.open_task(self.root, "grunt1"), "007")
 
+    def test_open_task_skips_fullwidth_digit_id(self):
+        """File named １２３.json (fullwidth Unicode digits) containing valid task JSON is skipped."""
+        inbox = bus.team_dir(self.root) / "inbox" / "grunt1"
+        inbox.mkdir(parents=True)
+        (inbox / "１２３.json").write_text(json.dumps({"kind": "task"}))
+        self.assertIsNone(bus.open_task(self.root, "grunt1"))
+
+    def test_open_task_skips_arabic_indic_digit_id(self):
+        """File named १२३.json (Arabic-Indic Unicode digits) containing valid task JSON is skipped."""
+        inbox = bus.team_dir(self.root) / "inbox" / "grunt1"
+        inbox.mkdir(parents=True)
+        (inbox / "١٢٣.json").write_text(json.dumps({"kind": "task"}))
+        self.assertIsNone(bus.open_task(self.root, "grunt1"))
+
+    def test_open_task_regression_ascii_digits_still_work(self):
+        """Regression: File named 042.json (ASCII digits) containing task JSON is still found."""
+        inbox = bus.team_dir(self.root) / "inbox" / "grunt1"
+        inbox.mkdir(parents=True)
+        (inbox / "042.json").write_text(json.dumps({"kind": "task"}))
+        self.assertEqual(bus.open_task(self.root, "grunt1"), "042")
+
 
 if __name__ == "__main__":
     unittest.main()
