@@ -40,6 +40,30 @@ class BusTest(unittest.TestCase):
             ids = list(ex.map(lambda _: bus.alloc_id(self.root), range(40)))
         self.assertEqual(len(set(ids)), 40)
 
+    def test_alloc_id_ignores_superscript_digit_file(self):
+        """Stray file named ² (superscript digit, isdigit()=True but int() fails) does not crash."""
+        ids = bus.team_dir(self.root) / "ids"
+        (ids / "²").touch()
+        # Should not raise ValueError, and should return "001"
+        result = bus.alloc_id(self.root)
+        self.assertEqual(result, "001")
+
+    def test_alloc_id_ignores_fullwidth_digit_file(self):
+        """Stray file named １２３ (fullwidth Unicode digits) is ignored; returns "001" not "124"."""
+        ids = bus.team_dir(self.root) / "ids"
+        (ids / "１２３").touch()
+        # Should ignore the fullwidth file and return "001"
+        result = bus.alloc_id(self.root)
+        self.assertEqual(result, "001")
+
+    def test_alloc_id_with_real_ids_001_002(self):
+        """Regression: with real ids 001 and 002 present, alloc_id returns "003"."""
+        ids = bus.team_dir(self.root) / "ids"
+        (ids / "001").touch()
+        (ids / "002").touch()
+        result = bus.alloc_id(self.root)
+        self.assertEqual(result, "003")
+
     def test_open_task_none_when_result_sealed(self):
         bus.write_json(bus.task_path(self.root, "grunt1", "001"),
                        {"id": "001", "kind": "task"})

@@ -69,7 +69,7 @@ def _try_read_obj(path: Path) -> dict | None:
 def alloc_id(root: Path) -> str:
     ids = team_dir(root) / "ids"
     ids.mkdir(parents=True, exist_ok=True)
-    taken = [int(p.name) for p in ids.iterdir() if p.name.isdigit()]
+    taken = [int(p.name) for p in ids.iterdir() if ID_RE.fullmatch(p.name)]
     n = max(taken, default=0) + 1
     while True:
         try:
