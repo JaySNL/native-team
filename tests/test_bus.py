@@ -57,6 +57,38 @@ class BusTest(unittest.TestCase):
         self.assertTrue(bus.is_dead(self.root, "006"))
         self.assertIsNone(bus.open_task(self.root, "grunt1"))
 
+    def test_open_task_skips_malformed_json_file(self):
+        """Malformed (non-JSON) file in inbox doesn't raise; valid task still found."""
+        inbox = bus.team_dir(self.root) / "inbox" / "grunt1"
+        inbox.mkdir(parents=True)
+        # Write a malformed file with name sorted before valid task
+        (inbox / "000-bad.json").write_text("not valid json {{{")
+        # Write a valid task
+        bus.write_json(bus.task_path(self.root, "grunt1", "007"),
+                       {"id": "007", "kind": "task"})
+        # Should skip the malformed file and return the valid task
+        self.assertEqual(bus.open_task(self.root, "grunt1"), "007")
+
+    def test_open_task_skips_file_without_kind_field(self):
+        """A .json file that parses but has no 'kind' field is skipped."""
+        bus.write_json(bus.task_path(self.root, "grunt1", "008"),
+                       {"id": "008", "some_field": "value"})
+        self.assertIsNone(bus.open_task(self.root, "grunt1"))
+
+    def test_open_task_skips_json_array_file(self):
+        """A .json file containing a JSON array (not an object) is skipped."""
+        inbox = bus.team_dir(self.root) / "inbox" / "grunt1"
+        inbox.mkdir(parents=True)
+        # Write a JSON array
+        (inbox / "array.json").write_text(json.dumps([1, 2, 3]))
+        self.assertIsNone(bus.open_task(self.root, "grunt1"))
+
+    def test_open_task_derives_id_from_filename(self):
+        """open_task returns task id from filename even when embedded 'id' is absent."""
+        bus.write_json(bus.task_path(self.root, "grunt1", "009"),
+                       {"kind": "task"})  # no "id" field
+        self.assertEqual(bus.open_task(self.root, "grunt1"), "009")
+
 
 if __name__ == "__main__":
     unittest.main()

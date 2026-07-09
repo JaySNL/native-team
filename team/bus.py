@@ -46,6 +46,24 @@ def read_json(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
+def _try_read_obj(path: Path) -> dict | None:
+    """Try to read a JSON object from a file, returning None if read or parse fails.
+
+    Returns None if:
+    - File cannot be read (OSError, UnicodeDecodeError)
+    - JSON parsing fails (JSONDecodeError)
+    - JSON parses but is not a dict (e.g., array, scalar)
+    """
+    try:
+        obj = json.loads(path.read_text())
+        # Only return if it's actually a dict (object), not a list or other JSON type
+        if isinstance(obj, dict):
+            return obj
+        return None
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+
+
 def alloc_id(root: Path) -> str:
     ids = team_dir(root) / "ids"
     ids.mkdir(parents=True, exist_ok=True)
@@ -95,10 +113,13 @@ def open_task(root: Path, agent: str) -> str | None:
     if not box.is_dir():
         return None
     for p in sorted(box.glob("*.json")):
-        obj = read_json(p)
+        obj = _try_read_obj(p)
+        if obj is None:
+            continue
         if obj.get("kind") != "task":
             continue
-        tid = obj["id"]
+        # Derive task id from filename (authoritative), not from embedded obj["id"]
+        tid = p.stem
         if result_path(root, tid).exists() or is_dead(root, tid):
             continue
         return tid
