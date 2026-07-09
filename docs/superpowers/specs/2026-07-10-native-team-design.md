@@ -75,9 +75,13 @@ need no absolute paths and `team verify` opens files relative to the repo root.
   inbox/lead/NNN.json      # messages from grunts to the lead
   staging/NNN.json         # result records accumulating; not yet visible as done
   results/NNN.json         # sealed result; its existence means the task is done
-  logs/<agent>.log         # tmux pipe-pane tee, for postmortems
+  logs/<agent>.log         # raw tmux pipe-pane tee (ANSI, redraw-heavy); read via `team log`
   ids/NNN                  # empty marker files; O_EXCL creation claims an id
 ```
+
+Outside the bus, `team init` also touches the target repo at `.qwen/settings.json` (backing up any
+existing file to `.qwen/settings.json.team-backup`) and appends `.team/` and `.qwen/` to `.gitignore`.
+`team down` reverses both.
 
 There is no `tasks.json`. The board is `ls`. A single mutable file written by a lead and N grunts is
 a write race and a lie waiting to happen; the board that "never self-updated" was a board that needed
@@ -106,18 +110,71 @@ no multiplexer at all.
 
 ## Agent lifecycle
 
-### Grunts are long-lived interactive panes
+### Grunts are long-lived interactive `qwen` panes
 
-Each grunt is a real interactive CLI (`qwen`, or `claude-local`) that stays alive across tasks. This
-avoids the node-boot tax measured in the `qwen-cli-wiring` memory: a trivial headless `qwen -p` call
-took ~100s wall, only ~26s of it API. It also preserves the 2am escape hatch — you can `tmux attach`
-and type into a wedged grunt, which is impossible with a supervisor loop occupying the pane.
+The reference grunt is the **`qwen` CLI**, already routed to the Mac's ollama. One to three of them,
+spawned as needed. `claude-local` remains a valid `backend` value in `roster.json` — `panes.py` does
+not care what runs in a pane — but qwen is what the design targets.
+
+Each grunt stays alive across tasks. This avoids the node-boot tax measured in the `qwen-cli-wiring`
+memory: a trivial headless `qwen -p` call took ~100s wall, only ~26s of it API. It also preserves the
+2am escape hatch — you can `tmux attach` and type into a wedged grunt, which is impossible with a
+supervisor loop occupying the pane.
 
 The cost of a long-lived pane is context accumulation. That is handled explicitly:
 
 **`/clear` fires on a new task, never on a reply.** A new task means the grunt should have no memory;
 a reply is a continuation of the question it just asked, and clearing it would discard the context
-that produced the question.
+that produced the question. Measured: `/clear` does reset qwen's conversational context (a planted
+token was not recalled afterwards).
+
+### Grunt configuration: `.qwen/settings.json`
+
+**Measured, not assumed.** Inside a git repo, qwen's context loader walks from cwd to the project root
+and loads **every** `QWEN.md`, `AGENTS.md`, and `CLAUDE.md` it finds. `/clear` does not drop them —
+they are re-injected context, not conversation. A grunt in `IFZMods-dist` would therefore receive that
+repo's prose on every turn, which is papercut #7's worst failure ("restated the project's own
+documentation back as a finding") promoted from *likely* to *guaranteed*.
+
+Additionally, qwen's default `approvalMode` is `default` ("Ask permissions"). A grunt calling
+`team result add` through `run_shell_command` would raise an approval prompt and hang forever; the
+lead would observe only a `TIMEOUT`.
+
+`team init` therefore writes `<repo>/.qwen/settings.json`:
+
+```json
+{
+  "context": { "fileName": ["TEAM_GRUNT_CONTEXT.md"] },
+  "tools": {
+    "approvalMode": "yolo",
+    "computerUse": { "enabled": false },
+    "excludeTools": ["write_file", "replace", "edit", "save_memory", "web_fetch"]
+  }
+}
+```
+
+- `context.fileName` points at a filename that does not exist, so **no** context file loads. Project
+  settings *override* the global array rather than merging with it (measured).
+- `excludeTools` removes every mutation tool. Phase-1 grunts are read-only **by construction**, not by
+  promise. `run_shell_command` is retained solely so the grunt can call `team`.
+- `approvalMode: "yolo"` prevents the approval wedge. Safe precisely because the mutation tools are
+  gone.
+- `computerUse: false` strips 35 of 56 tool schemas — the single largest prefill tax
+  (memory `qwen-cli-wiring`).
+
+**This mutates the target repo's configuration.** Consequences, handled explicitly:
+
+- Any pre-existing `.qwen/settings.json` is moved to `.qwen/settings.json.team-backup` by `team init`.
+- `team down` restores it. **`team down` is therefore phase 1, not phase 2** — a crashed session must
+  not leave a repo hijacked.
+- `team init` adds both `.team/` and `.qwen/` to the target repo's `.gitignore`.
+- While a session is live, a manual `qwen` run by the user in that repo loses its `CLAUDE.md` context
+  and runs in YOLO. `team init` prints this warning.
+
+`--safe-mode` was evaluated and rejected. It suppresses context files with no repo side effects
+(measured: ollama routing survives, model stays `qwen3-coder-256k:latest`), but it disables *all*
+customizations — including `excludeTools`. That leaves a YOLO grunt holding `write_file`, which
+phase 1 forbids.
 
 ### The task file is the entire contract
 
@@ -136,10 +193,26 @@ do task .team/inbox/grunt1/001.json
 The grunt reads its own task file. This avoids `send-keys` quoting and newline-submit hazards
 entirely — long strings through `send-keys` are an escaping minefield, and a newline submits early.
 
-It also means no `QWEN.md` / `AGENTS.md` context-file plumbing, and no team protocol polluting the
-target repo's own `AGENTS.md`. A grunt that reads only its task file has everything it needs. This
-directly inverts papercut #7's "restated the project's own documentation back as a finding": there is
-no stale `.md` in its context to regurgitate.
+Combined with the `context.fileName` suppression above, a grunt that reads only its task file has
+everything it needs and *nothing else*. This directly inverts papercut #7's "restated the project's
+own documentation back as a finding": there is no stale `.md` in its context to regurgitate, because
+the loader has been pointed at a file that does not exist.
+
+**Injection mechanics, measured.** `tmux send-keys -t <pane> -l "<text>"` followed by a separate
+`send-keys Enter` delivers exact literal text into an Ink TUI — no escaping damage, no bracketed-paste
+handling needed.
+
+But typing a leading `/` opens qwen's **command palette**, and `Enter` then selects the *highlighted
+completion* rather than submitting the line. `/clear` works only because `clear` happens to be
+highlighted. `panes.py` therefore:
+
+1. sends `Escape` first, to dismiss any palette or stale input state;
+2. sends the literal text;
+3. sends `Enter`;
+4. for `/clear`, verifies the postcondition by scraping the footer.
+
+The footer renders `N% context used`. That is a free, scrapeable health signal: a successful `/clear`
+drops it to the harness baseline, and a grunt whose context is climbing is a grunt about to degrade.
 
 ### Scheduling: lead-as-scheduler, zero daemon
 
@@ -300,13 +373,16 @@ didn't. The requirement was observability, and observability is what this delive
 ## CLI surface
 
 ```
-team init [--force]                     create .team/, write .gitignore entry
+team init [--force]                     create .team/, write .qwen/settings.json (backing up
+                                        any existing), append .team/ and .qwen/ to .gitignore
+team down                               restore .qwen/settings.json, kill session, remove .team/
 team send <agent> --new-task --question <text> --scope <path>... [--supersede]
 team send <agent> --reply <msg-id> <text>
 team wait --for lead [--timeout N]
 team wait --task <id>... [--timeout N]
 team inbox                              one line per message
 team show <id>                          full body of one message
+team log <agent> [--tail N]             de-ANSI'd, de-duped, spinner-stripped transcript
 team msg --note|--blocked|--failed --task <id> <text>     (grunt-side)
 team result add --task <id> --file F --line N --symbol S --evidence E   (grunt-side)
 team result done --task <id>                                            (grunt-side)
@@ -363,6 +439,15 @@ wrong 30–50% of the time. When a grunt returns a fabricated citation, you need
 model hallucinated or the task file was ambiguous — and that answer lives in the transcript. Without
 `pipe-pane` you have tmux scrollback: bounded, and gone when the pane dies.
 
+**But raw `pipe-pane` output is a screen recording, not a transcript.** Measured on a four-turn qwen
+probe: 341 KB of tee'd bytes, 274 KB after stripping ANSI, and only **13.9 KB of unique non-blank
+lines**. Ink redraws the whole frame twice a second, so the log is ~96% spinner
+(`I'll be back... with an answer. (7.5s · esc to cancel)`).
+
+`team log <agent>` is therefore a **phase-1 deliverable**, not an ergonomic extra: it strips ANSI
+escapes, collapses consecutive duplicate frames, and drops spinner lines, turning 341 KB into
+something a human — or a lead paying for context — can actually read.
+
 `roster.json` is written by the layout script that creates the panes, so it is a record of what was
 created rather than a runtime guess. That is the fix for papercut #9.
 
@@ -378,18 +463,22 @@ happen to run `claude-local --watch`. Do not build a `--team` mode.
 ## Phases
 
 **Phase 1 — the milestone.**
-Modules `bus`, `schema`, `verify`, `panes`, `cli`. `roster.json`. `pipe-pane` logging. Race-safe id
-allocation. `team init` stale-state guard and `.gitignore` write. Commands: `init`, `send`, `wait`,
-`inbox`, `show`, `msg`, `result`, `verify`.
+Modules `bus`, `schema`, `verify`, `panes`, `log`, `cli`. `roster.json`. `pipe-pane` logging plus the
+`team log` renderer. Race-safe id allocation. `team init` stale-state guard, `.qwen/settings.json`
+write + backup, `.gitignore` write. `team down` restore. Commands: `init`, `down`, `send`, `wait`,
+`inbox`, `show`, `log`, `msg`, `result`, `verify`.
+
+`team down` is phase 1 because `team init` mutates the target repo's qwen configuration. A crashed
+session must not leave a repo hijacked.
 
 The end-to-end smoke test *is* the milestone: two panes, lead is a real `claude`, grunt1 is an
-interactive `claude-local`. Lead sends a lookup task; grunt answers with records; lead verifies and
-prints the table. That single loop exercises the bus, the file-drop channel, structural verification,
-and context discipline — and proves `/compact` works in the lead pane.
+interactive `qwen`. Lead sends a lookup task; grunt answers with records; lead verifies and prints the
+table. That single loop exercises the bus, the file-drop channel, structural verification, and context
+discipline — and proves `/compact` works in the lead pane.
 
 **Phase 2 — ergonomics, no design debt.**
-`team board` (`ls .team/results` with columns), `team down` (kill session, remove bus), multi-grunt
-fan-out, roster health-checks.
+`team board` (`ls .team/results` with columns), multi-grunt fan-out beyond the first grunt, roster
+health-checks (including the `% context used` footer scrape).
 
 **Phase 3 — deliberately out of scope for now.**
 Grunt edits, and the git-worktree isolation they would require. The result schema leaves room for an
@@ -411,21 +500,42 @@ survive it.
 
 ---
 
-## Risks and validation items
+## Validation results
 
-These are assumptions this design rests on. Each is checked during phase 1, before the code that
-depends on it is finished.
+Measured 2026-07-10 against `qwen` v0.19.8 and `tmux` 3.7b, before any implementation code was
+written. Environment: Mac ollama reachable, `qwen3-coder-256k:latest`.
 
-1. **`send-keys` into an Ink-based TUI.** Both `qwen` and `claude` render with Ink. Injection likely
-   needs `tmux send-keys -t <pane> -l "<text>"` followed by a separate `send-keys Enter`, and may
-   need bracketed-paste handling. Verify against a live pane before building `panes.py` around it.
-2. **`/clear` exists and resets context in both grunt CLIs.** Assumed for `qwen` and `claude-local`.
-   Confirm by sending `/clear` and probing for prior-turn recall.
-3. **Background Bash re-invokes an idle lead.** Documented harness behavior ("re-invokes you when it
-   exits"). Confirm with a trivial `sleep && echo` before relying on it for wake-on-artifact.
-4. **Grunts will sometimes ignore the CLI.** Accepted and unfixable. Mitigated by `TIMEOUT` being
-   observable, and by the transcript in `.team/logs/<agent>.log` explaining why.
-5. **Lead-as-scheduler stalls when the lead stalls.** Accepted. The lead is the orchestrator.
+| # | Assumption | Result |
+|---|---|---|
+| 1 | `send-keys -l` + `Enter` reaches an Ink TUI | **Confirmed.** Exact literal text; no escaping or bracketed-paste handling needed |
+| 2 | `/clear` resets qwen's context | **Confirmed.** A planted token was not recalled after `/clear` |
+| 3 | Typing `/clear` is safe | **Refuted.** It opens a 70-entry command palette; `Enter` selects the highlighted completion. Mitigation: `Escape` first, verify postcondition |
+| 4 | The task file is the grunt's only context | **Refuted.** In a git repo, qwen auto-loads every `QWEN.md` / `AGENTS.md` / `CLAUDE.md` up to the project root, and `/clear` does not drop them. Mitigation: `context.fileName` override |
+| 5 | Project settings override the global `context.fileName` | **Confirmed.** Override, not merge |
+| 6 | `--safe-mode` suppresses context files without repo writes | **Confirmed** — and rejected, because it also disables `excludeTools` |
+| 7 | `raw pipe-pane` yields a usable transcript | **Refuted.** 341 KB / 4 turns, 13.9 KB unique. ~96% spinner redraw. Mitigation: `team log` renderer |
+| 8 | A grunt cannot wedge on tool approval | **Refuted.** Default is `Ask permissions`. Mitigation: `tools.approvalMode: "yolo"` + `excludeTools` |
+| 9 | `settings.tools.approvalMode` accepts `default`/`plan`/`yolo`/`auto_edit` | **Confirmed** from the bundle's string table |
+
+### Still unverified — checked in Task 1 before code depends on them
+
+- **Command-scoped shell allowlist.** Gemini-CLI supports `run_shell_command(<prefix>)` in the tool
+  allowlist, which would restrict the grunt's shell to `team` only. The qwen bundle is minified and
+  the grep was inconclusive. If unsupported, `run_shell_command` stays unrestricted and read-only is
+  enforced by `excludeTools` alone — the grunt could still `sed -i` via shell. Accepted risk, recorded
+  here rather than hidden.
+- **The grep-tool's canonical name** (`search_file_content` vs something else). Only matters if we
+  ever move to an allowlist rather than a denylist.
+- **Background Bash re-invokes an idle lead.** Documented harness behavior ("re-invokes you when it
+  exits"). Confirm with a trivial `sleep && echo` before relying on it for wake-on-artifact.
+
+### Accepted, unfixable
+
+- **Grunts will sometimes ignore the CLI** (papercut #3). Mitigated by `TIMEOUT` being observable and
+  by `team log` explaining why.
+- **Lead-as-scheduler stalls when the lead stalls.** The lead is the orchestrator by definition.
+- **A live team session hijacks manual `qwen` use in the target repo.** `team init` warns; `team down`
+  restores.
 
 ---
 
