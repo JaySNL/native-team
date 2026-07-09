@@ -89,6 +89,34 @@ class BusTest(unittest.TestCase):
                        {"kind": "task"})  # no "id" field
         self.assertEqual(bus.open_task(self.root, "grunt1"), "009")
 
+    def test_open_task_skips_notes_json_invalid_id_format(self):
+        """File named notes.json (not zero-padded 3-digit) containing valid task JSON is skipped."""
+        inbox = bus.team_dir(self.root) / "inbox" / "grunt1"
+        inbox.mkdir(parents=True)
+        (inbox / "notes.json").write_text(json.dumps({"kind": "task"}))
+        self.assertIsNone(bus.open_task(self.root, "grunt1"))
+
+    def test_open_task_skips_single_digit_id_format(self):
+        """File named 1.json (not zero-padded) containing valid task JSON is skipped."""
+        inbox = bus.team_dir(self.root) / "inbox" / "grunt1"
+        inbox.mkdir(parents=True)
+        (inbox / "1.json").write_text(json.dumps({"kind": "task"}))
+        self.assertIsNone(bus.open_task(self.root, "grunt1"))
+
+    def test_open_task_skips_four_digit_id_format(self):
+        """File named 0007.json (four digits instead of three) containing valid task JSON is skipped."""
+        inbox = bus.team_dir(self.root) / "inbox" / "grunt1"
+        inbox.mkdir(parents=True)
+        (inbox / "0007.json").write_text(json.dumps({"kind": "task"}))
+        self.assertIsNone(bus.open_task(self.root, "grunt1"))
+
+    def test_open_task_accepts_valid_three_digit_zero_padded_id(self):
+        """File named 007.json (valid zero-padded 3-digit format) containing task JSON is found."""
+        inbox = bus.team_dir(self.root) / "inbox" / "grunt1"
+        inbox.mkdir(parents=True)
+        (inbox / "007.json").write_text(json.dumps({"kind": "task"}))
+        self.assertEqual(bus.open_task(self.root, "grunt1"), "007")
+
 
 if __name__ == "__main__":
     unittest.main()

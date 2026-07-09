@@ -1,10 +1,12 @@
 """Filesystem bus primitives. Knows nothing about tmux or schemas."""
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
 TEAM = ".team"
+ID_RE = re.compile(r"\d{3}")
 
 
 class BusError(Exception):
@@ -55,7 +57,7 @@ def _try_read_obj(path: Path) -> dict | None:
     - JSON parses but is not a dict (e.g., array, scalar)
     """
     try:
-        obj = json.loads(path.read_text())
+        obj = read_json(path)
         # Only return if it's actually a dict (object), not a list or other JSON type
         if isinstance(obj, dict):
             return obj
@@ -120,6 +122,9 @@ def open_task(root: Path, agent: str) -> str | None:
             continue
         # Derive task id from filename (authoritative), not from embedded obj["id"]
         tid = p.stem
+        # Validate that the id matches the required format (zero-padded 3-digit)
+        if not ID_RE.fullmatch(tid):
+            continue
         if result_path(root, tid).exists() or is_dead(root, tid):
             continue
         return tid
