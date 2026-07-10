@@ -1109,7 +1109,11 @@ def init(root: Path, force: bool = False) -> list[str]:
             f"{team} already exists. A stale bus makes `team wait` return "
             f"instantly on yesterday's results. Run `team down`, or pass --force."
         )
+    # Read provenance BEFORE the rmtree destroys it.
+    prior = {}
     if team.exists():
+        if (team / "init.json").exists():
+            prior = bus.read_json(team / "init.json")
         shutil.rmtree(team)
 
     for sub in BUS_SUBDIRS:
@@ -1118,8 +1122,17 @@ def init(root: Path, force: bool = False) -> list[str]:
 
     settings, backup = _qwen_settings(root), _backup(root)
     settings.parent.mkdir(parents=True, exist_ok=True)
-    created = not settings.exists()
-    if not created:
+
+    # Provenance must survive a re-init. On a second `--force` run, settings.json
+    # is OUR generated file, so re-deriving `created` from its existence would
+    # flip the flag (leaving our YOLO settings behind on `down`) and copy our
+    # file over the user's backup, destroying their original config. Carry the
+    # recorded answer forward, and never overwrite a backup that already exists.
+    if "created_qwen_settings" in prior:
+        created = prior["created_qwen_settings"]
+    else:
+        created = not settings.exists()
+    if not created and not backup.exists():
         shutil.copy2(settings, backup)
     bus.write_json(settings, GRUNT_SETTINGS)
 
