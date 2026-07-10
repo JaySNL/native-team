@@ -79,6 +79,26 @@ class Worktrees:
                 self._git(path(root, agent), "status", "--porcelain", "-uall")
                 .splitlines() if line.strip()]
 
+    def is_ignored(self, root: Path, agent: str, rel: str) -> bool:
+        """Is `rel` gitignored *in the worktree*?
+
+        Asked in the worktree, not the main tree: a worktree is checked out
+        from HEAD, so its `.gitignore` is the committed one and may differ from
+        the uncommitted file the lead is looking at.
+        """
+        rc, _ = self._run(["git", "check-ignore", "-q", rel], path(root, agent))
+        return rc == 0
+
+    def build(self, root: Path, agent: str, build_dir: str,
+              argv: list[str]) -> tuple[int, str]:
+        """Run the build command inside the worktree. argv, never a shell
+        string: the command round-trips through the bus, which a grunt's
+        unrestricted shell can rewrite."""
+        cwd = path(root, agent) / build_dir
+        if not cwd.is_dir():
+            raise WorktreeError(f"build dir does not exist in worktree: {build_dir}")
+        return self._run(argv, cwd)
+
     def remove(self, root: Path, agent: str) -> None:
         self._git(root, "worktree", "remove", "--force", str(path(root, agent)))
 

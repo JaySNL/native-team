@@ -48,6 +48,62 @@ Do not edit any file. You have no write tools.
 """
 
 
+BUILD_TEMPLATE = """\
+You are a grunt on a code-writing team. Work ONLY inside your worktree.
+
+TASK {tid}
+WHAT TO BUILD:
+{question}
+
+WORK IN THIS DIRECTORY -- prefix every shell command with it:
+
+    cd {workdir}
+
+CREATE EXACTLY THESE FILES, and no others:
+{create}
+
+You may READ anything. You may create only the files listed above. Do NOT
+modify or delete any file that already exists -- not one line. If a file you
+need to change already exists, stop and say so with `team msg --blocked`.
+
+BUILD IT until it compiles:
+
+    cd {build_dir} && {build_cmd}
+
+Read the compiler errors and fix your own files until the build succeeds. Do
+not edit the project file. Do not run any other build script.
+
+WHEN THE BUILD SUCCEEDS:
+
+    team result done --task {tid}
+
+If you want to point at a specific line you wrote, add citations first -- the
+line number must come from `grep -n`, and the evidence must be the full line:
+
+    team result add --task {tid} --file <path> --line <n> \\
+        --symbol <name> --evidence '<the exact source line>'
+
+If you cannot proceed, do not guess and do not touch anything outside your
+files:
+
+    team msg --blocked --task {tid} "your question here"
+
+Everything you changed is checked against the list above. Touching anything
+else fails the task.
+"""
+
+
 def task_body(tid: str, question: str, scope: list[str]) -> str:
     scope_text = "\n".join(f"  - {s}" for s in scope) or "  (none given)"
     return TEMPLATE.format(tid=tid, question=question.strip(), scope=scope_text)
+
+
+def build_body(tid: str, question: str, workdir: str, create: list[str],
+               build_dir: str, build_cmd: list[str]) -> str:
+    import shlex
+    create_text = "\n".join(f"  - {c}" for c in create)
+    return BUILD_TEMPLATE.format(
+        tid=tid, question=question.strip(), workdir=workdir,
+        create=create_text, build_dir=build_dir,
+        build_cmd=" ".join(shlex.quote(a) for a in build_cmd),
+    )

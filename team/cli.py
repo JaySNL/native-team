@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-from team import bus, collect, config, log, ops, panes, verify, wait, worktrees
+from team import bus, buildverify, collect, config, log, ops, panes, verify, wait, worktrees
 from team.config import StateError
 from team.schema import SchemaError
 
@@ -20,6 +20,12 @@ OK, VERIFY_FAIL, PANE_GONE, REFUSED, TIMEOUT = 0, 1, 2, 3, 4
 # `.team/work/<agent>`, and `repo_root` would stop at that worktree's own `.git`
 # file and address a bus that isn't there.
 PRE_BUS_COMMANDS = frozenset({"init", "down"})
+
+# Never `build.sh`: it deploys shared libraries into the game directory before
+# compiling, and a grunt is an unattended process with an unrestricted shell.
+# It does not get a command that writes outside the repo. The lead runs build.sh
+# after `verify` passes and `collect` has moved the files across.
+DEFAULT_BUILD_CMD = ("dotnet", "build", "-v", "q", "--nologo")
 
 # `brief` prints the lead's ground rules. It must work from anywhere -- a lead
 # that has lost the path after a /compact is exactly who runs it -- so it
@@ -103,8 +109,14 @@ def cmd_send(args, root):
         print(f"replied {rid} to {args.agent}")
         return OK
 
-    tid = ops.compose_task(root, args.agent, args.question, args.scope or [],
-                           supersede=args.supersede)
+    if args.type == "build":
+        tid = ops.compose_build_task(
+            root, args.agent, args.question, args.create,
+            args.build_dir, args.build_cmd or list(DEFAULT_BUILD_CMD),
+            replace=args.replace)
+    else:
+        tid = ops.compose_task(root, args.agent, args.question, args.scope or [],
+                               supersede=args.supersede)
     p.clear_context(pane)
     p.send_line(pane, f"do task {bus.task_path(root, args.agent, tid).relative_to(root)}")
     print(f"sent task {tid} to {args.agent}")
@@ -183,6 +195,11 @@ def cmd_result(args, root):
 
 
 def cmd_verify(args, root):
+    if buildverify.is_build_task(root, args.task):
+        v = buildverify.verify_build(root, args.task)
+        print(buildverify.render(v))
+        return OK if (args.lenient or not v.failed) else VERIFY_FAIL
+
     payload = bus.read_json(bus.result_path(root, args.task))
     verdicts = verify.verify_records(root, payload["records"])
     print(verify.render_table(args.task, verdicts))
@@ -226,6 +243,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scope", nargs="*")
     p.add_argument("--supersede", action="store_true")
     p.add_argument("--reply", metavar="MSG_ID")
+    p.add_argument("--type", choices=["find", "build"], default="find")
+    p.add_argument("--create", action="extend", nargs="+", default=[],
+                   metavar="PATH", help="build: files the grunt may create")
+    p.add_argument("--replace", action="store_true",
+                   help="build: let the lead delete the --create paths first")
+    p.add_argument("--build-dir", default=".", dest="build_dir")
+    # default=None, not the list: `action="extend"` APPENDS to its default, so
+    # a non-empty default turns `--build-cmd make` into
+    # ["dotnet","build",...,"make"]. Same trap as `--task` once had.
+    p.add_argument("--build-cmd", action="extend", nargs="+", dest="build_cmd",
+                   default=None, help="build: argv, never a shell string")
     p.add_argument("text", nargs="?", default="")
     p.set_defaults(fn=cmd_send)
 

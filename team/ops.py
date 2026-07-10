@@ -157,3 +157,84 @@ def result_done(root: Path, tid: str, agent: str) -> str:
     count = len(payload["records"])
     return post_message(root, agent, "result", tid,
                         f"{count} record(s) sealed; run `team verify {tid}`")
+
+
+def _porcelain(root: Path, agent: str, wt) -> list[str]:
+    return sorted(wt.dirty(root, agent))
+
+
+def compose_build_task(root: Path, agent: str, question: str,
+                       create: list[str], build_dir: str,
+                       build_cmd: list[str], replace: bool = False,
+                       wt=None) -> str:
+    """Dispatch a task that writes code, and record what it was allowed to write.
+
+    The snapshot is written *before* the task is announced, so it is the lead's
+    statement of intent rather than the grunt's account of what it did. `verify`
+    and `collect` read it; neither asks the worktree to describe itself.
+    """
+    from team import worktrees
+    wt = wt if wt is not None else worktrees.Worktrees()
+
+    if not create:
+        raise StateError("a build task must declare at least one --create path")
+
+    work = worktrees.path(root, agent)
+    if not work.is_dir():
+        raise StateError(
+            f"no worktree for {agent!r}. Run `team worktree up` -- a build task "
+            f"cannot be contained in a tree the lead and other grunts share."
+        )
+
+    # Build outputs must be invisible to the containment check. `-uall` skips
+    # gitignored paths, so if bin/obj are not ignored the first compile emits
+    # hundreds of untracked files and every build task fails containment for
+    # ever. Refuse now, with the reason, rather than let that be debugged later.
+    for out in ("obj", "bin"):
+        # Trailing slash is load-bearing. `.gitignore`'s `obj/` matches only a
+        # directory, and `git check-ignore probe/obj` on a path that does not
+        # exist yet cannot know it would be one -- so it reports "not ignored"
+        # for a repo that ignores it perfectly well. `probe/obj/` matches.
+        rel = f"{build_dir}/{out}/" if build_dir not in ("", ".") else f"{out}/"
+        if not wt.is_ignored(root, agent, rel):
+            raise StateError(
+                f"{rel} is not gitignored in the worktree, so build output "
+                f"would be indistinguishable from the grunt's work. Add it to "
+                f".gitignore and commit, then re-send."
+            )
+
+    resolved = []
+    for rel in create:
+        target = (work / rel).resolve()
+        if not target.is_relative_to(work.resolve()):
+            raise StateError(f"--create path escapes the worktree: {rel}")
+        if target.exists():
+            if not replace:
+                raise StateError(
+                    f"--create path already exists: {rel}. A grunt never "
+                    f"modifies an existing file. Pass --replace to have the "
+                    f"lead delete it first, or name a different path."
+                )
+            target.unlink()
+        resolved.append(rel)
+
+    tid = bus.alloc_id(root)
+    bus.write_json(bus.snapshot_path(root, tid), {
+        "task": tid,
+        "agent": agent,
+        "create": resolved,
+        "build_dir": build_dir,
+        "build_cmd": build_cmd,
+        "tree": _porcelain(root, agent, wt),
+    })
+    bus.write_json(bus.task_path(root, agent, tid), {
+        "id": tid,
+        "kind": "build",
+        "to": agent,
+        "from": "lead",
+        "question": question,
+        "scope": [],
+        "protocol": protocol.build_body(
+            tid, question, str(work), resolved, build_dir, build_cmd),
+    })
+    return tid
