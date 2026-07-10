@@ -25,6 +25,7 @@ For every finding, run exactly one command per citation:
 `--evidence` must be the FULL source line as it appears in the file. It is
 re-read and compared. A guessed line number will be detected and rejected.
 `--symbol` must appear inside `--evidence`.
+`--file` should be relative to the repo root, e.g. `src/A.cs`.
 
 When every citation is added:
 

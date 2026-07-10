@@ -373,20 +373,40 @@ if __name__ == "__main__":
 
 
 class AbsolutePathPolicyTest(unittest.TestCase):
-    """The absolute-path guard's ONLY unique behavior: an absolute path that
-    resolves INSIDE the repo is still OUT_OF_TREE. Citations are repo-relative
-    by contract; without this the guard is redundant with the containment
-    check and no test defends it.
+    """Containment, not spelling, is the safety property.
+
+    A live grunt returned a byte-correct citation using an absolute path and
+    was rejected OUT_OF_TREE. An absolute path that resolves inside the repo
+    is accepted; one that escapes -- including through a symlink -- is not.
     """
 
-    def test_absolute_path_inside_the_repo_is_out_of_tree(self):
+    def test_absolute_path_inside_the_repo_passes(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / "a.py").write_text("x = 1\n")
             rec = {"file": str(root / "a.py"), "line": 1,
                    "symbol": "x", "evidence": "x = 1"}
-            v = verify.verify_record(root, rec)
-            self.assertEqual(v.status, "OUT_OF_TREE", v)
+            self.assertEqual(verify.verify_record(root, rec).status, "PASS")
+
+    def test_absolute_path_outside_the_repo_is_out_of_tree(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as o:
+            root, outside = Path(d), Path(o)
+            (outside / "secret.txt").write_text("top secret line\n")
+            rec = {"file": str(outside / "secret.txt"), "line": 1,
+                   "symbol": "secret", "evidence": "top secret line"}
+            self.assertEqual(verify.verify_record(root, rec).status, "OUT_OF_TREE")
+
+    def test_symlink_inside_the_repo_pointing_outside_is_out_of_tree(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as o:
+            root, outside = Path(d), Path(o)
+            (outside / "secret.txt").write_text("top secret line\n")
+            (root / "link.txt").symlink_to(outside / "secret.txt")
+            for path in ("link.txt", str(root / "link.txt")):
+                with self.subTest(path=path):
+                    rec = {"file": path, "line": 1,
+                           "symbol": "secret", "evidence": "top secret line"}
+                    self.assertEqual(
+                        verify.verify_record(root, rec).status, "OUT_OF_TREE")
 
 
 class StatusVocabularyTest(unittest.TestCase):

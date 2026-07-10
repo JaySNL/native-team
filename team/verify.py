@@ -73,12 +73,16 @@ def _verify_record(root: Path, rec: dict) -> Verdict:
                        f"symbol {symbol!r} absent from quoted evidence")
 
     file_field = rec["file"]
-    if Path(file_field).is_absolute():
-        return Verdict(rec, "OUT_OF_TREE",
-                       f"absolute path escapes root: {file_field}")
 
+    # An absolute path is accepted only if it resolves inside the repo. A live
+    # grunt returned a byte-correct citation with an absolute path and was
+    # rejected for it; punishing correct work costs a re-ask and teaches
+    # nothing. Containment, not spelling, is the safety property -- and
+    # `resolve()` runs first, so a symlink pointing outside is still caught.
     root_resolved = root.resolve()
-    target_resolved = (root / file_field).resolve()
+    candidate = Path(file_field)
+    target_resolved = (candidate if candidate.is_absolute()
+                       else root / file_field).resolve()
     if not target_resolved.is_relative_to(root_resolved):
         return Verdict(rec, "OUT_OF_TREE",
                        f"path escapes root: {file_field}")
