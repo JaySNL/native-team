@@ -8,9 +8,60 @@ from pathlib import Path
 TEAM = ".team"
 ID_RE = re.compile(r"[0-9]{3}")
 
+# A named bus is `.team-<slug>`; the plain `.team` is the default, unnamed one.
+# `BUS_SLUG_RE` validates the `<slug>` a `--bus` flag carries; `BUS_DIR_RE`
+# validates a whole directory name (`.team` or `.team-<slug>`), which is what
+# `$TEAM_BUS` holds and what a bus-named ancestor is recognised by.
+BUS_SLUG_RE = re.compile(r"[A-Za-z0-9._-]+")
+BUS_DIR_RE = re.compile(r"\.team(-[A-Za-z0-9._-]+)?")
+
 
 class BusError(Exception):
     pass
+
+
+def resolve_bus_name(cli_flag: str | None = None, start: Path | None = None) -> str:
+    """The bus directory name to address, by first match:
+
+      a. an explicit `--bus` slug: '' or 'default' -> '.team', else '.team-<slug>'
+      b. `$TEAM_BUS`, which holds a full dir name (e.g. '.team-auth'), verbatim
+      c. the nearest ancestor of `start`/cwd whose own basename is a bus name --
+         this is what lets a grunt pane, whose cwd is `.team-auth/work/<agent>`,
+         find its own bus without being told which one it is
+      d. '.team'
+
+    With neither a flag nor `$TEAM_BUS` and no bus-named ancestor, the answer is
+    exactly '.team' -- the single-team default, byte-for-byte as it always was.
+
+    The flag wins over the env var so a lead can override an exported `$TEAM_BUS`
+    for one command; the env var wins over the walk-up so an explicit choice is
+    never second-guessed by where the shell happens to sit.
+    """
+    if cli_flag is not None:
+        slug = cli_flag.strip()
+        if slug in ("", "default"):
+            return TEAM
+        if not BUS_SLUG_RE.fullmatch(slug):
+            raise BusError(
+                f"invalid --bus slug {slug!r}: use letters, digits, '.', '_', '-'"
+            )
+        return f"{TEAM}-{slug}"
+
+    env = os.environ.get("TEAM_BUS")
+    if env:
+        env = env.strip()
+        if not BUS_DIR_RE.fullmatch(env):
+            raise BusError(
+                f"invalid $TEAM_BUS {env!r}: expected '.team' or '.team-<slug>'"
+            )
+        return env
+
+    cur = (start or Path.cwd()).resolve()
+    for cand in [cur, *cur.parents]:
+        if BUS_DIR_RE.fullmatch(cand.name):
+            return cand.name
+
+    return TEAM
 
 
 def repo_root(start: Path | None = None) -> Path:
@@ -26,25 +77,30 @@ def repo_root(start: Path | None = None) -> Path:
 def bus_root(start: Path | None = None) -> Path:
     """The directory holding the bus. Every verb but `init`/`down` wants this.
 
-    Not `repo_root`. A grunt working inside a git worktree -- `.team/work/<agent>`,
+    Not `repo_root`. A grunt working inside a git worktree -- `<busdir>/work/<agent>`,
     where a build task runs -- would have `repo_root` stop at the worktree's own
     `.git` *file* and report the worktree as the repo. Its `team result add`
-    would then address a bus that does not exist. Walking up for `.team` instead
-    finds the one real bus, and terminates correctly even from inside
-    `.team/work/<agent>`, since none of `<agent>`, `work`, or `.team` contains a
-    `.team` of its own.
+    would then address a bus that does not exist. Walking up for the resolved bus
+    dir instead finds the one real bus, and terminates correctly even from inside
+    `<busdir>/work/<agent>`, since none of `<agent>`, `work`, or the bus dir
+    contains a bus dir of its own.
+
+    Which bus is picked comes from `resolve_bus_name` (a `--bus` flag lives in
+    `$TEAM_BUS` by the time we get here). With no flag and no env the resolved
+    name is '.team', so this is byte-for-byte the old single-team walk-up.
     """
     cur = (start or Path.cwd()).resolve()
+    name = resolve_bus_name(start=cur)
     for cand in [cur, *cur.parents]:
-        if (cand / TEAM).is_dir():
+        if (cand / name).is_dir():
             return cand
     raise BusError(
-        f"no {TEAM}/ bus found in {cur} or any parent. Run `team init` first."
+        f"no {name}/ bus found in {cur} or any parent. Run `team init` first."
     )
 
 
-def team_dir(root: Path) -> Path:
-    return root / TEAM
+def team_dir(root: Path, name: str | None = None) -> Path:
+    return root / (name or resolve_bus_name())
 
 
 def atomic_write(path: Path, data: str) -> None:

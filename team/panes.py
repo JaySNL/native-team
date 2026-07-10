@@ -74,11 +74,11 @@ class PaneError(Exception):
 
 
 def write_death_hook(team_bin: Path, root: Path, agent: str,
-                     dirname: str = "team-hooks-") -> Path:
+                     dirname: str = "team-hooks-", bus_name: str | None = None) -> Path:
     """Write the `pane-died` hook script and return its path.
 
-    Never under `.team/`. `team down` deletes `.team` while panes may still be
-    alive, and tmux would then fire a hook whose script has vanished.
+    Never under the bus dir. `team down` deletes the bus while panes may still
+    be alive, and tmux would then fire a hook whose script has vanished.
 
     `mktemp` also sidesteps a hazard measured live against tmux 3.7b: a hook
     fired by tmux hands `run-shell`'s stored argument to `sh -c` unquoted, so a
@@ -86,15 +86,22 @@ def write_death_hook(team_bin: Path, root: Path, agent: str,
     quoted path works when `tmux run-shell` is invoked directly. A mkdtemp path
     contains no metacharacters no matter where the repo lives.
 
+    `bus_name`, when given, is exported as `$TEAM_BUS` in the script so the
+    `team msg` it runs addresses the grunt's own bus and not a sibling. tmux
+    fires `run-shell` in the server's environment, which does not carry the
+    lead's `$TEAM_BUS`, so a named bus would otherwise post the death notice to
+    the wrong inbox.
+
     Every interpolated path is still `shlex.quote`d, because the script's own
     body is shell.
     """
     d = Path(tempfile.mkdtemp(prefix=dirname))
     script = d / f"{agent}-died.sh"
     q = shlex.quote
+    prefix = f"env TEAM_BUS={q(bus_name)} " if bus_name else ""
     script.write_text(
         "#!/bin/sh\n"
-        f"exec {q(str(team_bin))} --root {q(str(root))} msg "
+        f"exec {prefix}{q(str(team_bin))} --root {q(str(root))} msg "
         f"--agent {q(agent)} --failed --task pane-died {q('grunt pane died')}\n"
     )
     script.chmod(0o755)

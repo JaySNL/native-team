@@ -51,6 +51,47 @@ Only `team/panes.py` knows tmux exists. `wait.py` polls the filesystem rather th
 `tmux wait-for`, whose signals latch server-globally and produce stale false wakes (measured — see
 `docs/tmux-capabilities.md`).
 
+## Two teams in one repo
+
+Several teams can share one working tree without a worktree per team. The bus is
+normally `.team/`; a *named* bus is `.team-<slug>/`, and each is independent —
+its own inbox, results, roster, and grunts.
+
+    team init --bus auth        # creates .team-auth/, then prints the line below
+    export TEAM_BUS=.team-auth  # adopt it: every later `team` targets this bus
+
+`team init --bus <slug>` prints that `export` line for you. Once it is set the
+lead verbs (`send`, `wait`, `verify`, `grunt add`, `down`, …) all honour
+`$TEAM_BUS`, so you never repeat `--bus`, and grunt panes inherit it. Run two
+teams from two shells in the same checkout:
+
+    # shell A
+    team init --bus auth  &&  export TEAM_BUS=.team-auth  &&  team-up 2
+
+    # shell B
+    team init --bus ui    &&  export TEAM_BUS=.team-ui    &&  team-up 2
+
+Resolution order, first match wins: `--bus <slug>` flag → `$TEAM_BUS` → the
+nearest `.team`/`.team-*` ancestor → `.team`. With no flag and no env it is
+exactly `.team`, byte-for-byte as before — nothing changes for a single team.
+The shared `.qwen/settings.json` is ref-counted: the first bus to `init` backs
+your real settings up, the last bus to `down` restores them.
+
+### Running a 2nd team via the MCP tools
+
+The `team …` CLI (via Bash) needs no reload — each call is a fresh process that
+reads current code and honours `$TEAM_BUS` at once. The MCP tools
+(`mcp__team__team_send/verify/wait`) do not: the running server is bound to the
+bus and code it started with. `/clear` wipes your context but leaves that server
+subprocess alive on its original `$TEAM_BUS`, so it does not hand you a second
+team. Export the bus **before** launching `claude` — a later subshell export
+won't reach it, even through a `/mcp` reconnect:
+
+    # terminal A
+    cd repo && export TEAM_BUS=.team-auth && claude
+    # terminal B (separate claude process)
+    cd repo && export TEAM_BUS=.team-ui && claude
+
 ## Two things to know before you run it
 
 - **`team init` changes your repo.** It writes `.qwen/settings.json`, which puts your own `qwen` in

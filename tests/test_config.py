@@ -75,7 +75,7 @@ class ConfigTest(unittest.TestCase):
         config.down(self.root)
         config.init(self.root)
         text = (self.root / ".gitignore").read_text()
-        self.assertEqual(text.count(".team/"), 1)
+        self.assertEqual(text.count(".team*/"), 1)
         self.assertEqual(text.count(".qwen/"), 1)
 
     def test_init_refuses_stale_bus_without_force(self):

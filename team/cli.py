@@ -65,14 +65,21 @@ def _next_grunt(roster: dict) -> str:
 
 
 def _grunt_env() -> dict:
-    """`team` on the new pane's PATH, and nothing else.
+    """`team` on the new pane's PATH, and the bus it belongs to.
 
-    A grunt calls `team result add`. Today that resolves only because the shell
+    A grunt calls `team result add`. Today PATH resolves only because the shell
     which ran `team-up` happened to export PYTHONPATH, and panes inherit it --
     an accident of the dogfood setup. `split-window -e` (measured: reaches the
     new pane and nothing else) makes it explicit.
+
+    `TEAM_BUS` is the resolved bus dir name (`.team`, `.team-auth`, ...). The
+    grunt's cwd is `<busdir>/work/<agent>`, so the walk-up in `resolve_bus_name`
+    would find the right bus on its own -- but a grunt that `cd`s elsewhere, or a
+    tool that runs `team` from a different directory, must still land on this
+    team's bus, so it is pinned explicitly.
     """
-    return {"PATH": f"{TEAM_BIN.parent}{os.pathsep}{os.environ.get('PATH', '')}"}
+    return {"PATH": f"{TEAM_BIN.parent}{os.pathsep}{os.environ.get('PATH', '')}",
+            "TEAM_BUS": bus.resolve_bus_name()}
 
 
 def _digest(msg: dict) -> str:
@@ -85,6 +92,13 @@ def _digest(msg: dict) -> str:
 def cmd_init(args, root):
     for line in config.init(root, force=args.force):
         print(line)
+    busname = bus.resolve_bus_name(getattr(args, "bus", None))
+    if busname != bus.TEAM:
+        # A named bus. The lead's later commands need to know which one; the
+        # cleanest handoff is one exported var its whole shell picks up, so
+        # `team send`/`verify`/`wait` need no repeated --bus.
+        print(f"\nnamed bus {busname} is live. Adopt it in this shell so every "
+              f"later `team` command targets it:\n    export TEAM_BUS={busname}")
     return OK
 
 
@@ -224,7 +238,8 @@ def cmd_grunt_add(args, root, p=None):
     pane = p.split(target, work, args.command, env=_grunt_env())
     try:
         p.pipe_pane(pane, bus.team_dir(root) / "logs" / f"{name}.log")
-        p.install_death_hook(pane, panes.write_death_hook(TEAM_BIN, root, name))
+        p.install_death_hook(pane, panes.write_death_hook(
+            TEAM_BIN, root, name, bus_name=bus.resolve_bus_name()))
     except Exception:
         # The pane exists but is not in the roster, so nothing else will ever
         # find it. An orphaned agent left running in a worktree is worse than
@@ -481,13 +496,24 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--version", action="version",
                     version=f"team {__version__}")
     ap.add_argument("--root", default=None,
-                    help="bus root (default: nearest ancestor holding .team)")
+                    help="bus root (default: nearest ancestor holding a bus dir)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("init"); p.add_argument("--force", action="store_true")
+    # `--bus <slug>` on any verb a lead runs directly. Shared via a parent parser
+    # rather than the top parser so it reads `team init --bus auth` (after the
+    # verb), matching --root's mirror image `team --root X init` (before it), and
+    # so a verb the lead never types can simply omit it. Empty/`default` -> the
+    # plain `.team`; anything else -> `.team-<slug>`.
+    bus_parent = argparse.ArgumentParser(add_help=False)
+    bus_parent.add_argument(
+        "--bus", default=None, metavar="SLUG",
+        help="address the named bus .team-<slug> (default: .team, or $TEAM_BUS)")
+
+    p = sub.add_parser("init", parents=[bus_parent])
+    p.add_argument("--force", action="store_true")
     p.set_defaults(fn=cmd_init)
 
-    p = sub.add_parser("down")
+    p = sub.add_parser("down", parents=[bus_parent])
     p.add_argument("--force", action="store_true",
                    help="discard uncollected grunt work in the worktrees")
     p.set_defaults(fn=cmd_down)
@@ -496,18 +522,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--show", action="store_true", help="print the brief, not its path")
     p.set_defaults(fn=cmd_brief)
 
-    p = sub.add_parser("collect")
+    p = sub.add_parser("collect", parents=[bus_parent])
     p.add_argument("task")
     p.set_defaults(fn=cmd_collect)
 
     p = sub.add_parser("worktree").add_subparsers(dest="wtcmd", required=True)
-    p.add_parser("up").set_defaults(fn=cmd_worktree_up)
+    p.add_parser("up", parents=[bus_parent]).set_defaults(fn=cmd_worktree_up)
 
     for verb, fn, helptext in (
         ("up", cmd_up, "register the lead pane; optionally add grunts"),
         ("bootstrap", cmd_bootstrap, "git init + commit + team init + team up"),
     ):
-        p = sub.add_parser(verb, help=helptext)
+        p = sub.add_parser(verb, help=helptext, parents=[bus_parent])
         p.add_argument("grunts", nargs="?", type=int, default=0)
         p.add_argument("--session", default=DEFAULT_SESSION)
         p.add_argument("--lead-pane", dest="lead_pane", default=None,
@@ -523,18 +549,18 @@ def build_parser() -> argparse.ArgumentParser:
         p.set_defaults(fn=fn)
 
     g = sub.add_parser("grunt").add_subparsers(dest="gcmd", required=True)
-    a = g.add_parser("add")
+    a = g.add_parser("add", parents=[bus_parent])
     a.add_argument("name", nargs="?", default=None)
     a.add_argument("--window", default=None, help="tmux target; default $TMUX_PANE")
     a.add_argument("--command", default="qwen")
     a.add_argument("--timeout", type=float, default=60.0)
     a.set_defaults(fn=cmd_grunt_add)
-    r = g.add_parser("rm")
+    r = g.add_parser("rm", parents=[bus_parent])
     r.add_argument("name")
     r.add_argument("--force", action="store_true", help="discard uncollected work")
     r.set_defaults(fn=cmd_grunt_rm)
 
-    p = sub.add_parser("send")
+    p = sub.add_parser("send", parents=[bus_parent])
     p.add_argument("agent")
     p.add_argument("--question", default="")
     p.add_argument("--scope", nargs="*")
@@ -559,7 +585,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("text", nargs="?", default="")
     p.set_defaults(fn=cmd_send)
 
-    p = sub.add_parser("wait")
+    p = sub.add_parser("wait", parents=[bus_parent])
     p.add_argument("--for", dest="for_target", choices=["lead"], default=None)
     # action="extend": `--task 001 --task 002` must wait on BOTH. With a
     # bare nargs="*" the second flag silently replaced the first, so the
@@ -568,11 +594,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=3600.0)
     p.set_defaults(fn=cmd_wait)
 
-    sub.add_parser("inbox").set_defaults(fn=cmd_inbox)
+    sub.add_parser("inbox", parents=[bus_parent]).set_defaults(fn=cmd_inbox)
 
-    p = sub.add_parser("show"); p.add_argument("msg_id"); p.set_defaults(fn=cmd_show)
+    p = sub.add_parser("show", parents=[bus_parent])
+    p.add_argument("msg_id"); p.set_defaults(fn=cmd_show)
 
-    p = sub.add_parser("log")
+    p = sub.add_parser("log", parents=[bus_parent])
     p.add_argument("agent"); p.add_argument("--tail", type=int, default=0)
     p.set_defaults(fn=cmd_log)
 
@@ -602,11 +629,12 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--agent", default="grunt1")
     p.set_defaults(fn=cmd_result)
 
-    p = sub.add_parser("answer", help="print a sealed ask task's answer")
+    p = sub.add_parser("answer", help="print a sealed ask task's answer",
+                       parents=[bus_parent])
     p.add_argument("task")
     p.set_defaults(fn=cmd_answer)
 
-    p = sub.add_parser("verify")
+    p = sub.add_parser("verify", parents=[bus_parent])
     p.add_argument("task")
     p.add_argument("--show", action="store_true")
     p.add_argument("--lenient", action="store_true",
@@ -619,6 +647,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     try:
+        # A `--bus` flag becomes `$TEAM_BUS` for the rest of this process, so it
+        # wins over any inherited env (the flag is the most explicit choice) and
+        # reaches every `bus.resolve_bus_name()` downstream -- root resolution,
+        # `team_dir`, and the env we hand to grunt panes -- through one channel.
+        bus_flag = getattr(args, "bus", None)
+        if bus_flag is not None:
+            os.environ["TEAM_BUS"] = bus.resolve_bus_name(bus_flag)
         if args.cmd in NO_ROOT_COMMANDS:
             return args.fn(args, None)
         if args.root:

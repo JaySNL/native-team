@@ -1,4 +1,4 @@
-.team/
+.team*/
 __pycache__/
 *.pyc
 .superpowers/

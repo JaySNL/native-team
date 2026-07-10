@@ -24,7 +24,9 @@ from team import bus, worktrees
 
 BUS_SUBDIRS = ("inbox/lead", "results", "staging", "logs", "ids", "dead",
                "snapshots")
-GITIGNORE_ENTRIES = (".team/", ".qwen/")
+# A glob, not `.team/`: named buses (`.team-auth/`, `.team-ui/`) must be ignored
+# too, and `.team*/` covers the plain `.team/` as well.
+GITIGNORE_ENTRIES = (".team*/", ".qwen/")
 TEAM_DIRNAME = ".team"
 
 # `excludeTools` is defence in depth and NOTHING MORE. Measured on task 013: a
@@ -60,12 +62,13 @@ def _backup(root: Path) -> Path:
 
 def _assert_safe_to_delete(target: Path, root: Path) -> None:
     """Refuse to treat `target` as a deletable bus dir unless it is
-    unambiguously `<repo_root>/.team` once symlinks are resolved.
+    unambiguously a `<repo_root>/.team` or `<repo_root>/.team-<slug>` once
+    symlinks are resolved.
 
-    A symlinked `.team` is refused outright, even if it happens to point back
-    inside the repo -- `.team` must always be a real directory this module
+    A symlinked bus dir is refused outright, even if it happens to point back
+    inside the repo -- a bus dir must always be a real directory this module
     created, never a link. For a non-symlink target, the resolved path's
-    final component must be exactly ".team" (catching a `bus.team_dir` that
+    final component must be a bus dir name (catching a `bus.team_dir` that
     hands back some other directory under a misleading name) *and* the
     independently-recomputed `bus.repo_root(root)` must be one of its
     resolved parents (catching one that resolves outside the repo entirely).
@@ -75,16 +78,30 @@ def _assert_safe_to_delete(target: Path, root: Path) -> None:
         raise StateError(f"refusing to delete {target}: it is a symlink, not a real directory")
     resolved = target.resolve()
     root_resolved = bus.repo_root(root).resolve()
-    if resolved.name != TEAM_DIRNAME:
+    if not bus.BUS_DIR_RE.fullmatch(resolved.name):
         raise StateError(
             f"refusing to delete {target}: resolves to {resolved}, "
-            f"whose name is {resolved.name!r}, not {TEAM_DIRNAME!r}"
+            f"whose name is {resolved.name!r}, not '.team' or '.team-<slug>'"
         )
     if root_resolved not in resolved.parents:
         raise StateError(
             f"refusing to delete {target}: resolves to {resolved}, "
             f"which is not inside {root_resolved}"
         )
+
+
+def _other_bus_dirs(root: Path, current: Path) -> list[Path]:
+    """Every OTHER `.team*` bus directory in `root`, besides `current`.
+
+    This is the ref count behind the shared `.qwen`. Both named buses live in
+    one git root and so read one `.qwen/settings.json`: the FIRST bus to `init`
+    backs the user's real settings up, and only the LAST bus to go `down`
+    restores them. Both decisions reduce to "is any sibling bus still here?".
+    """
+    cur = current.resolve()
+    return [p for p in root.glob(".team*")
+            if p.is_dir() and bus.BUS_DIR_RE.fullmatch(p.name)
+            and p.resolve() != cur]
 
 
 def _update_gitignore(root: Path) -> None:
@@ -137,7 +154,14 @@ def init(root: Path, force: bool = False, wt=None) -> list[str]:
     settings, backup = _qwen_settings(root), _backup(root)
     settings.parent.mkdir(parents=True, exist_ok=True)
 
-    if "created_qwen_settings" in prior_meta:
+    if _other_bus_dirs(root, team):
+        # Not the first team in this repo. A sibling bus already provisioned the
+        # shared `.qwen`, backing the user's real settings.json up. Touching the
+        # backup now would clobber theirs, and deriving `created` from the file
+        # would mistake their GRUNT_SETTINGS for our own doing. Own nothing: this
+        # bus's `down` must not restore or remove settings another bus manages.
+        created = False
+    elif "created_qwen_settings" in prior_meta:
         # Re-initializing over a bus we created before (a --force re-init with
         # no `down` in between): settings.json, if present, already holds our
         # own GRUNT_SETTINGS, not fresh user content. Trust the provenance
@@ -276,10 +300,20 @@ def down(root: Path, force: bool = False, wt=None, killer=None) -> list[str]:
         actions += _drop_worktrees(root, wt, force)
 
     settings, backup = _qwen_settings(root), _backup(root)
-    if backup.exists():
+    if _other_bus_dirs(root, team):
+        # A sibling bus is still live. The shared `.qwen` belongs to it now --
+        # leave it exactly as it is. Only the last bus out gives it back.
+        pass
+    elif backup.exists():
         shutil.move(str(backup), str(settings))
         actions.append(f"restored {settings} from backup")
-    elif meta.get("created_qwen_settings") and settings.exists():
+    elif settings.exists() and (
+            meta.get("created_qwen_settings")
+            or bus._try_read_obj(settings) == GRUNT_SETTINGS):
+        # Last bus out, no backup: the user had no settings.json, so the one on
+        # disk is our own GRUNT_SETTINGS. `meta` covers the single-bus case; the
+        # content check also catches a multi-bus teardown where the bus that
+        # first recorded `created` was already removed, taking its init.json.
         settings.unlink()
         actions.append(f"removed {settings}")
 
