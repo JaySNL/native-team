@@ -128,6 +128,34 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("OFF_BY", out, "a lenient exit must still print the failure")
 
+    def test_repeated_task_flags_accumulate(self):
+        """`--task 001 --task 002` must wait on BOTH. A bare nargs="*" let the
+        second flag replace the first, so the lead waited on one task while
+        believing it waited on two -- silently. Observed live.
+        """
+        args = cli.build_parser().parse_args(
+            ["wait", "--task", "001", "--task", "002", "--timeout", "5"])
+        self.assertEqual(args.task, ["001", "002"])
+
+    def test_wait_reports_a_superseded_task_instead_of_silence(self):
+        """A superseded task resolves but never seals. Reporting it as neither
+        SEALED nor TIMEOUT made `team wait` print nothing and exit 0.
+        """
+        self.run_cli("init")
+        (bus.team_dir(self.root) / "inbox" / "grunt1").mkdir(parents=True)
+        tid = ops.compose_task(self.root, "grunt1", "q", ["a.py"])
+        ops.result_add(self.root, tid, {"file": "a.py", "line": 1,
+                                        "symbol": "x", "evidence": "x = 1"})
+        ops.result_done(self.root, tid, "grunt1")
+        dead = ops.compose_task(self.root, "grunt1", "q2", ["a.py"])
+        bus.mark_dead(self.root, dead)
+
+        code, out = self.run_cli("wait", "--task", tid, "--task", dead,
+                                 "--timeout", "0")
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"SEALED: {tid}", out)
+        self.assertIn(f"SUPERSEDED: {dead}", out)
+
     def test_result_add_schema_violation_exits_3(self):
         self.run_cli("init")
         (bus.team_dir(self.root) / "inbox" / "grunt1").mkdir(parents=True)

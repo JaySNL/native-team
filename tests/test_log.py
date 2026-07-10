@@ -167,6 +167,13 @@ class SpinnerFormatTest(unittest.TestCase):
                 raw = f"keep me\n({elapsed} · esc to cancel)\n"
                 self.assertEqual(log.render(raw), "keep me")
 
+    def test_spinner_with_a_token_counter_is_dropped(self):
+        """qwen appends "· ↑ 316 tokens" between the elapsed time and
+        "esc to cancel" once it starts streaming. Observed live.
+        """
+        raw = "keep me\n(49.7s · \u2191 316 tokens · esc to cancel)\n"
+        self.assertEqual(log.render(raw), "keep me")
+
     def test_a_real_line_that_merely_mentions_cancelling_survives(self):
         self.assertEqual(log.render("(3 items · esc to cancel)\n"),
                          "(3 items · esc to cancel)")

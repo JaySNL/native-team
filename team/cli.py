@@ -77,8 +77,14 @@ def cmd_wait(args, root):
         return OK
 
     sealed, missing = wait.for_tasks(root, args.task, timeout=args.timeout)
+    # A superseded task is resolved but never seals. Reporting it as neither
+    # sealed nor timed out left `team wait` printing nothing and exiting 0.
+    superseded = [t for t in args.task
+                  if t not in sealed and t not in missing]
     for tid in sealed:
         print(f"SEALED: {tid}")
+    for tid in superseded:
+        print(f"SUPERSEDED: {tid}")
     for tid in missing:
         print(f"TIMEOUT: {tid}")
     return TIMEOUT if missing else OK
@@ -165,7 +171,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("wait")
     p.add_argument("--for", dest="for_target", choices=["lead"], default=None)
-    p.add_argument("--task", nargs="*", default=[])
+    # action="extend": `--task 001 --task 002` must wait on BOTH. With a
+    # bare nargs="*" the second flag silently replaced the first, so the
+    # lead waited on one task while believing it waited on two.
+    p.add_argument("--task", action="extend", nargs="+", default=[])
     p.add_argument("--timeout", type=float, default=3600.0)
     p.set_defaults(fn=cmd_wait)
 
