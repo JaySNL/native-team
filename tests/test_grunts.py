@@ -334,3 +334,68 @@ class TaskPathTest(_Repo):
         self.assertTrue((work / rel).is_file() or Path(rel).is_file())
         # the failing form: relative to the main root, resolved from the worktree
         self.assertFalse((work / ".team" / "inbox" / "grunt1" / "001.json").exists())
+
+
+class BootstrapTest(unittest.TestCase):
+    """`team bootstrap` turns an empty directory into a dispatching lead."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.p = FakePanes()
+        self.env = mock.patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%1"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def _boot(self, root=None, grunts=0, force=False):
+        args = type("A", (), dict(grunts=grunts, session="s", lead_pane=None,
+                                  force=force, timeout=1.0, command="sh",
+                                  lead_command="sh"))()
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            return cli.cmd_bootstrap(args, root or self.root, p=self.p)
+
+    def test_an_empty_directory_becomes_a_repo_with_a_bus_and_a_lead(self):
+        self._boot()
+        self.assertTrue((self.root / ".git").is_dir())
+        self.assertTrue((self.root / ".team").is_dir())
+        self.assertTrue(worktrees.Worktrees().has_commit(self.root))
+        self.assertEqual(sorted(bus.read_json(bus.roster_path(self.root))), ["lead"])
+
+    def test_it_refuses_a_directory_inside_another_repo(self):
+        """`bus_root()` walks up. A nested `git init` would leave every other
+        verb addressing the parent's bus."""
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        sub = self.root / "nested"
+        sub.mkdir()
+        with self.assertRaisesRegex(StateError, "inside the git repository"):
+            self._boot(root=sub)
+        self.assertFalse((sub / ".git").exists())
+
+    def test_it_is_idempotent(self):
+        self._boot()
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.root,
+                              capture_output=True, text=True).stdout
+        self._boot(force=True)          # a live roster needs --force
+        again = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.root,
+                               capture_output=True, text=True).stdout
+        self.assertEqual(head, again, "bootstrap made a second commit")
+
+    def test_an_existing_repo_with_commits_gains_no_extra_commit(self):
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        for k, v in (("user.email", "t@t.t"), ("user.name", "t")):
+            subprocess.run(["git", "config", k, v], cwd=self.root, check=True)
+        (self.root / "f.txt").write_text("x\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=self.root, check=True)
+        before = subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=self.root,
+                                capture_output=True, text=True).stdout.strip()
+        self._boot()
+        after = subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=self.root,
+                               capture_output=True, text=True).stdout.strip()
+        self.assertEqual(before, after)
+
+    def test_it_adds_grunts_when_asked(self):
+        self._boot(grunts=1)
+        self.assertEqual(sorted(bus.read_json(bus.roster_path(self.root))),
+                         ["grunt1", "lead"])

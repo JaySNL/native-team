@@ -77,6 +77,26 @@ class Worktrees:
         rc, _ = self._run(["git", "rev-parse", "--verify", "HEAD"], root)
         return rc == 0
 
+    # --- repository setup, for `team bootstrap` -----------------------------
+    # Not worktree operations, but the same subprocess seam, the same fake
+    # runner in tests, and the same rule: argv lists, never a shell string.
+
+    def toplevel(self, root: Path) -> Path | None:
+        """The git root `root` belongs to, or None if it belongs to none.
+
+        Load-bearing for `bootstrap`: a directory *inside* another repo has no
+        `.git` of its own, so a naive check would `git init` a nested repo --
+        and `bus_root()` would meanwhile walk up and find the parent's bus.
+        """
+        rc, out = self._run(["git", "rev-parse", "--show-toplevel"], root)
+        return Path(out.strip()) if rc == 0 and out.strip() else None
+
+    def init_repo(self, root: Path) -> None:
+        self._git(root, "init", "-q", ".")
+
+    def empty_commit(self, root: Path, message: str) -> None:
+        self._git(root, "commit", "-q", "--allow-empty", "-m", message)
+
     def add(self, root: Path, agent: str) -> Path:
         """Create `<root>/.team/work/<agent>` detached at HEAD."""
         if not self.has_commit(root):

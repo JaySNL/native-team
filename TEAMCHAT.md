@@ -172,6 +172,11 @@ pane rooted anywhere else is a pane whose file tools address YOUR tree.
 them when a task needs one; remove them when it does not. Each costs a worktree
 (0.1s, ~24MB on a 35MB repo) and a running model.
 
+In a directory that is not yet a repo, `team bootstrap` does the `git init`, the
+first commit, `team init` and `team up` in one idempotent call. It refuses if the
+directory sits inside another git repo — `bus_root()` walks up, so a nested repo
+would leave every verb addressing the parent's bus.
+
 ---
 
 ## Teardown

@@ -23,6 +23,11 @@ OK, VERIFY_FAIL, PANE_GONE, REFUSED, TIMEOUT = 0, 1, 2, 3, 4
 # file and address a bus that isn't there.
 PRE_BUS_COMMANDS = frozenset({"init", "down"})
 
+# `bootstrap` runs before a bus AND before a repo: `repo_root()` would raise,
+# or worse, walk up and hand back the enclosing repo. It takes cwd, and refuses
+# on its own terms if cwd turns out to be inside someone else's repo.
+CWD_COMMANDS = frozenset({"bootstrap"})
+
 # Never `build.sh`: it deploys shared libraries into the game directory before
 # compiling, and a grunt is an unattended process with an unrestricted shell.
 # It does not get a command that writes outside the repo. The lead runs build.sh
@@ -130,6 +135,59 @@ def _grunt_worktree(root, name, wt, notes):
         return root
     config.provision(work)
     return work
+
+
+def cmd_bootstrap(args, root, p=None):
+    """Everything between an empty directory and a lead that can dispatch work.
+
+    Idempotent by construction: each step asks the world what it is before
+    changing it, so running `bootstrap` twice is running `up` twice.
+
+    It does NOT read TEAMCHAT.md into the lead -- there is no way to do that
+    from a subprocess. The `/teamup` skill exists for exactly that half.
+    """
+    p = p if p is not None else panes.Panes()
+    wt = worktrees.Worktrees()
+    actions: list[str] = []
+
+    top = wt.toplevel(root)
+    if top is None:
+        wt.init_repo(root)
+        actions.append(f"git init {root}")
+    elif top.resolve() != root:
+        # `bus_root()` walks up. Without this, bootstrapping a subdirectory of
+        # a repo would create a git repo nested inside another one, while every
+        # other verb kept addressing the parent's bus.
+        raise StateError(
+            f"{root} is inside the git repository at {top}. Bootstrapping here "
+            f"would nest a repo inside a repo, and the bus would still resolve "
+            f"to {top}. Run this at {top}, or in a directory of its own."
+        )
+
+    if not wt.has_commit(root):
+        try:
+            wt.empty_commit(root, "team: bootstrap")
+        except worktrees.WorktreeError as exc:
+            raise StateError(
+                f"could not create the first commit: {exc}\n"
+                f"A worktree cannot check out an unborn HEAD. If git is asking "
+                f"who you are, set user.email and user.name and re-run."
+            ) from exc
+        actions.append("created an empty first commit")
+
+    if not bus.team_dir(root).exists() or args.force:
+        actions += config.init(root, force=args.force)
+    else:
+        actions.append(f"bus already at {bus.team_dir(root)}")
+
+    for line in actions:
+        print(line)
+    if shutil.which("team") is None:
+        print(f"\nwarning: `team` is not on PATH. A grunt calls it, and gets it "
+              f"from the pane env -- but you will want it too:\n"
+              f"    ln -s {TEAM_BIN} ~/.local/bin/team", file=sys.stderr)
+
+    return cmd_up(args, root, p=p)
 
 
 def cmd_grunt_add(args, root, p=None):
@@ -449,19 +507,24 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("worktree").add_subparsers(dest="wtcmd", required=True)
     p.add_parser("up").set_defaults(fn=cmd_worktree_up)
 
-    p = sub.add_parser("up", help="register the lead pane; optionally add grunts")
-    p.add_argument("grunts", nargs="?", type=int, default=0)
-    p.add_argument("--session", default=DEFAULT_SESSION)
-    p.add_argument("--lead-pane", dest="lead_pane", default=None,
-                   help="override $TMUX_PANE")
-    p.add_argument("--force", action="store_true", help="overwrite a live roster")
-    p.add_argument("--timeout", type=float, default=60.0)
-    # The two agent binaries. Named, not hardcoded, so the pane and roster
-    # machinery can be tested without booting a real model -- and so a lead can
-    # point at a wrapper. Nothing branches on which one is chosen.
-    p.add_argument("--lead-command", dest="lead_command", default="claude")
-    p.add_argument("--command", default="qwen", help="grunt binary")
-    p.set_defaults(fn=cmd_up)
+    for verb, fn, helptext in (
+        ("up", cmd_up, "register the lead pane; optionally add grunts"),
+        ("bootstrap", cmd_bootstrap, "git init + commit + team init + team up"),
+    ):
+        p = sub.add_parser(verb, help=helptext)
+        p.add_argument("grunts", nargs="?", type=int, default=0)
+        p.add_argument("--session", default=DEFAULT_SESSION)
+        p.add_argument("--lead-pane", dest="lead_pane", default=None,
+                       help="override $TMUX_PANE")
+        p.add_argument("--force", action="store_true",
+                       help="overwrite a live roster (and, for bootstrap, the bus)")
+        p.add_argument("--timeout", type=float, default=60.0)
+        # The two agent binaries. Named, not hardcoded, so the pane and roster
+        # machinery can be tested without booting a real model -- and so a lead
+        # can point at a wrapper. Nothing branches on which one is chosen.
+        p.add_argument("--lead-command", dest="lead_command", default="claude")
+        p.add_argument("--command", default="qwen", help="grunt binary")
+        p.set_defaults(fn=fn)
 
     g = sub.add_parser("grunt").add_subparsers(dest="gcmd", required=True)
     a = g.add_parser("add")
@@ -554,6 +617,8 @@ def main(argv: list[str]) -> int:
             return args.fn(args, None)
         if args.root:
             root = Path(args.root).resolve()
+        elif args.cmd in CWD_COMMANDS:
+            root = Path.cwd().resolve()
         elif args.cmd in PRE_BUS_COMMANDS:
             root = bus.repo_root()
         else:
