@@ -1,4 +1,4 @@
-import tempfile, unittest
+import os, tempfile, unittest
 from pathlib import Path
 
 from team import verify
@@ -144,8 +144,120 @@ class VerifyTest(unittest.TestCase):
         })
         # After split("\\n"), line 3 is an empty string.
         # evidence.strip() is "nope", "".strip() is "", they don't match.
-        # So we expect either OFF_BY (if evidence found elsewhere) or FABRICATED.
-        self.assertIn(v.status, ("OFF_BY", "FABRICATED"))
+        # This is deterministic: "nope" appears nowhere in the file.
+        self.assertEqual(v.status, "FABRICATED")
+
+    # ---- Finding 1: empty/whitespace evidence must not rubber-stamp a phantom line ----
+
+    def test_empty_symbol_and_evidence_is_malformed(self):
+        """record {"symbol":"","evidence":""} citing line 3 of a 2-line file
+        (trailing '' from split("\\n")) must never PASS — must be MALFORMED."""
+        content = "a = 1\nb = 2\n"
+        (self.root / "src" / "Test.cs").write_text(content)
+        v = verify.verify_record(self.root, {
+            "file": "src/Test.cs",
+            "line": 3,
+            "symbol": "",
+            "evidence": ""
+        })
+        self.assertEqual(v.status, "MALFORMED")
+
+    def test_whitespace_only_evidence_is_malformed(self):
+        content = "a = 1\nb = 2\n"
+        (self.root / "src" / "Test.cs").write_text(content)
+        v = verify.verify_record(self.root, {
+            "file": "src/Test.cs",
+            "line": 3,
+            "symbol": "x",
+            "evidence": "   "
+        })
+        self.assertEqual(v.status, "MALFORMED")
+
+    # ---- Finding 2: path escape must not give a false PASS on arbitrary files ----
+
+    def test_absolute_path_escape_is_out_of_tree(self):
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        outside_file = Path(outside.name) / "secret.txt"
+        outside_file.write_text("top secret line\n")
+        v = verify.verify_record(self.root, {
+            "file": str(outside_file),
+            "line": 1,
+            "symbol": "top",
+            "evidence": "top secret line"
+        })
+        self.assertEqual(v.status, "OUT_OF_TREE")
+
+    def test_relative_traversal_escape_is_out_of_tree(self):
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        outside_file = Path(outside.name) / "secret.txt"
+        outside_file.write_text("top secret line\n")
+        rel = os.path.relpath(outside_file, self.root)
+        self.assertTrue(rel.startswith(".."), "test fixture must actually traverse out")
+        v = verify.verify_record(self.root, {
+            "file": rel,
+            "line": 1,
+            "symbol": "top",
+            "evidence": "top secret line"
+        })
+        self.assertEqual(v.status, "OUT_OF_TREE")
+
+    # ---- Finding 3: non-UTF-8 files must be refused, not falsely accused ----
+
+    def test_non_utf8_file_is_unreadable_not_fabricated(self):
+        (self.root / "src" / "Cafe.cs").write_bytes(
+            "// café notes\n".encode("latin-1"))
+        v = verify.verify_record(self.root, {
+            "file": "src/Cafe.cs",
+            "line": 1,
+            "symbol": "café",
+            "evidence": "// café notes"
+        })
+        self.assertEqual(v.status, "UNREADABLE")
+
+    # ---- Finding 4: a malformed record must not abort the batch ----
+
+    def test_missing_symbol_field_is_malformed(self):
+        rec = {"file": "src/TreatmentBed.cs", "line": 4,
+                "evidence": "    public bool TryHeal(Character c, float amount) {"}
+        v = verify.verify_record(self.root, rec)
+        self.assertEqual(v.status, "MALFORMED")
+
+    def test_line_as_string_is_malformed(self):
+        v = verify.verify_record(self.root, self.rec(line="1"))
+        self.assertEqual(v.status, "MALFORMED")
+
+    def test_line_as_bool_true_is_malformed(self):
+        v = verify.verify_record(self.root, self.rec(line=True))
+        self.assertEqual(v.status, "MALFORMED")
+
+    def test_line_zero_is_malformed(self):
+        v = verify.verify_record(self.root, self.rec(line=0))
+        self.assertEqual(v.status, "MALFORMED")
+
+    def test_batch_with_malformed_record_returns_all_verdicts_in_order(self):
+        good = self.rec()
+        bad = {"file": "src/TreatmentBed.cs", "line": 4}  # missing symbol/evidence
+        vs = verify.verify_records(self.root, [good, bad, good])
+        self.assertEqual(len(vs), 3)
+        self.assertEqual(vs[0].status, "PASS")
+        self.assertEqual(vs[1].status, "MALFORMED")
+        self.assertEqual(vs[2].status, "PASS")
+
+    # ---- OFF_BY detail should report match count, not just the first line ----
+
+    def test_off_by_detail_reports_match_count_when_evidence_recurs(self):
+        content = "}\n}\n}\nother\n"
+        (self.root / "src" / "Braces.cs").write_text(content)
+        v = verify.verify_record(self.root, {
+            "file": "src/Braces.cs",
+            "line": 4,
+            "symbol": "}",
+            "evidence": "}"
+        })
+        self.assertEqual(v.status, "OFF_BY")
+        self.assertIn("evidence matches 3 lines", v.detail)
 
 
 if __name__ == "__main__":
