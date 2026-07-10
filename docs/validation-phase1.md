@@ -14,6 +14,24 @@ This is an accepted, recorded risk — see the spec's "Still unverified" section
 | E | `pane-died` hook reports a dead grunt | PASS | live: killed the pane's process with `remain-on-exit on`; `failed` message reached the lead's inbox in ~3s |
 
 | F | Verification separates a wrong quote from a wrong answer | PASS | live: grunt1 named the right two methods for "where is zombie damage applied to a building", and got **both** citations wrong — `CharacterFightHandler.cs:508` for `GetDamage` (actual 388) and a `Structure.cs:1575` quote missing its trailing `;` |
+| G | Wrong line numbers are a tool-selection bug, not a competence ceiling | PASS | A/B on one cold question: with no instruction the grunt called `Read`, quoted both lines byte-perfectly, cited them **−4** and **+228** off; told to use `grep -n` it called its search tool and cited both **exactly** |
+| H | The `grep -n` rule works from the protocol alone | PASS | grunt2, cold, no hint in the question, 3/3 PASS on `Structure.cs:1196/1206/1216` — matched against the operator's own `grep -n` |
+
+Across the two cold tasks run before G, six citations: **every quoted source line was
+correct and every line number was wrong.** The grunts are not bad at reading code. They
+are bad at counting it, because a `Read` tool cannot tell them where they are. This is
+why the instruction lives in `protocol.py` and not in the lead's question — the protocol
+ships with every task, and a lead who has never watched a grunt's pane has no way to
+know it is needed.
+
+H is a single A/B, n=2 per condition. It is a clean confirmation of a hypothesis, not a
+measurement. And it does not make citations trustworthy: it makes them *usually* right,
+which is exactly the regime in which an unverified pipeline is most dangerous, because
+it teaches the lead to stop checking. `verify` still fails closed.
+
+Observed in H and not enforced anywhere: scope said `Structure.cs`, and the grunt also
+read `Health.cs`. "Do not wander" is advice, not a constraint. Citations outside the
+repo are caught by `OUT_OF_TREE`; citations outside *scope* are not caught at all.
 
 D is the project's reason to exist, reproduced against a real model on the first
 task ever sent. It is also why `team verify` now fails closed: at the time of the
