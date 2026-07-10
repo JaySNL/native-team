@@ -175,5 +175,73 @@ class DefaultRunnerTest(unittest.TestCase):
             )
 
 
+class PipeQuotingTest(unittest.TestCase):
+    """tmux hands pipe-pane's final argument to `sh -c`. It is the only
+    shell-interpreted string this module builds, so it must stay quoted.
+    A path with no metacharacters cannot prove that -- use one that has them.
+    """
+
+    def test_pipe_pane_quotes_a_logfile_path_with_a_space(self):
+        runner = FakeRunner()
+        panes.Panes(runner=runner, sleep=lambda _: None).pipe_pane(
+            "%1", Path("/tmp/x y.log")
+        )
+        self.assertEqual(
+            runner.calls,
+            [["tmux", "pipe-pane", "-o", "-t", "%1", "cat >> '/tmp/x y.log'"]],
+        )
+
+    def test_pipe_pane_neutralizes_shell_metacharacters(self):
+        runner = FakeRunner()
+        panes.Panes(runner=runner, sleep=lambda _: None).pipe_pane(
+            "%1", Path("/tmp/a;touch /tmp/PWNED")
+        )
+        self.assertEqual(
+            runner.calls,
+            [["tmux", "pipe-pane", "-o", "-t", "%1", "cat >> '/tmp/a;touch /tmp/PWNED'"]],
+        )
+
+
+class PalettePostconditionTest(unittest.TestCase):
+    def test_palette_regex_ignores_ordinary_parentheses(self):
+        """The postcondition looks for the palette's "(3/70)" counter.
+
+        Loosened to a bare "(", it would read any parenthesis in ordinary
+        output as "palette still open" and spin until timeout.
+        """
+        self.assertIsNone(panes.PALETTE.search("> done (see notes) and (x)"))
+
+    def test_palette_regex_fires_on_the_counter(self):
+        self.assertTrue(panes.PALETTE.search("  (3/70) /clear"))
+
+    def test_clear_context_accepts_a_clean_pane_on_the_first_capture(self):
+        """A pane whose output merely contains parentheses is already clean,
+        so clear_context must not capture a second time.
+        """
+        runner = FakeRunner(replies=[(0, ""), (0, ""), (0, ""), (0, "> done (see notes)")])
+        panes.Panes(runner=runner, sleep=lambda _: None).clear_context("%1")
+        captures = [c for c in runner.calls if "capture-pane" in c]
+        self.assertEqual(len(captures), 1, runner.calls)
+
+
+class SendPacingTest(unittest.TestCase):
+    def test_send_line_sleeps_between_the_separate_key_calls(self):
+        """qwen's Ink TUI drops keys sent back-to-back; the probe used a
+        delay between Escape, the literal text, and Enter. Pin that a delay
+        happens -- not its exact duration.
+        """
+        naps = []
+        panes.Panes(runner=FakeRunner(), sleep=naps.append).send_line("%1", "hi")
+        self.assertEqual(len(naps), 2)
+        self.assertTrue(all(n > 0 for n in naps), naps)
+
+
+class TmuxMissingTest(unittest.TestCase):
+    def test_default_runner_raises_pane_error_when_tmux_is_absent(self):
+        with mock.patch("team.panes.subprocess.run", side_effect=FileNotFoundError("tmux")):
+            with self.assertRaisesRegex(panes.PaneError, "tmux not found on PATH"):
+                panes.default_runner(["tmux", "list-panes"])
+
+
 if __name__ == "__main__":
     unittest.main()

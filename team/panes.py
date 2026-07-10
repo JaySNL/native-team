@@ -53,7 +53,12 @@ class PaneError(Exception):
 
 
 def default_runner(argv: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, capture_output=True, text=True)
+    try:
+        return subprocess.run(argv, capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        # tmux absent. A caller guarding with `except PaneError` should not
+        # have to also guard for the binary being missing.
+        raise PaneError(f"tmux not found on PATH: {argv[0]}") from exc
 
 
 class Panes:
