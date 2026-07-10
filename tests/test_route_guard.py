@@ -135,6 +135,93 @@ class DeniesReachingIntoAScope(_Bus):
         self.assertEqual(self._decide("Read", {"file_path": "other/B.cs"})[0], "deny")
 
 
+class TheLeadIsNotAlwaysAtTheBusRoot(_Bus):
+    """A tool's paths are relative to the tool's cwd; a scope is relative to the
+    bus root. Resolving a target against the root inverted the guard: it allowed
+    `../src/A.cs` and denied `src/A.cs`."""
+
+    def setUp(self):
+        super().setUp()
+        self.sub = self.root / "sub"
+        self.sub.mkdir()
+        self._task(scope=["src"])
+
+    def test_a_relative_path_out_of_the_subdir_into_the_scope_is_denied(self):
+        d, _, _ = self._decide("Read", {"file_path": "../src/A.cs"}, cwd=self.sub)
+        self.assertEqual(d, "deny")
+
+    def test_a_relative_path_that_only_looks_scoped_is_allowed(self):
+        """`sub/src/A.cs` does not exist and is not the scope."""
+        d, _, _ = self._decide("Read", {"file_path": "src/A.cs"}, cwd=self.sub)
+        self.assertEqual(d, "allow")
+
+    def test_bash_out_of_the_subdir_into_the_scope_is_denied(self):
+        d, _, _ = self._decide("Bash", {"command": "cat ../src/A.cs"}, cwd=self.sub)
+        self.assertEqual(d, "deny")
+
+    def test_an_absolute_path_is_unaffected_by_cwd(self):
+        d, _, _ = self._decide("Read", {"file_path": str(self.root / "src" / "A.cs")},
+                               cwd=self.sub)
+        self.assertEqual(d, "deny")
+
+    def test_grep_of_the_subdir_still_only_nudges(self):
+        d, _, ctx = self._decide("Grep", {"pattern": "hp", "path": "."}, cwd=self.sub)
+        self.assertEqual(d, "allow")
+        self.assertEqual(ctx, "")   # sub/ neither contains nor is inside src/
+
+
+class AnOmittedPathMeansTheCwd(_Bus):
+    """`Grep` for the symbol with no `path` is the most natural cheat there is.
+    Treating a missing path as "no target" made it the one reach the guard did
+    not even nudge about."""
+
+    def test_grep_with_no_path_nudges(self):
+        tid = self._task()
+        d, _, ctx = self._decide("Grep", {"pattern": "hp"})
+        self.assertEqual(d, "allow")
+        self.assertIn(tid, ctx)
+
+    def test_glob_with_no_path_and_a_wildcard_first_nudges(self):
+        tid = self._task()
+        d, _, ctx = self._decide("Glob", {"pattern": "**/*.cs"})
+        self.assertEqual(d, "allow")
+        self.assertIn(tid, ctx)
+
+    def test_glob_with_no_path_reaching_into_the_scope_is_still_denied(self):
+        self._task()
+        d, _, _ = self._decide("Glob", {"pattern": "src/**/*.cs"})
+        self.assertEqual(d, "deny")
+
+    def test_a_grep_from_inside_the_scope_is_denied(self):
+        """cwd is the scope, path omitted: the target is the scope itself."""
+        self._task()
+        d, _, _ = self._decide("Grep", {"pattern": "hp"}, cwd=self.root / "src")
+        self.assertEqual(d, "deny")
+
+
+class DecideNeverRaises(_Bus):
+    """The docstring says so; `command: 42` said otherwise (AttributeError)."""
+
+    def test_non_string_inputs_do_not_raise(self):
+        self._task()
+        for tool, inp in (("Bash", {"command": 42}),
+                          ("Bash", {"command": None}),
+                          ("Bash", {"command": ["cat", "src/A.cs"]}),
+                          ("Read", {"file_path": 42}),
+                          ("Read", {"file_path": None}),
+                          ("Grep", {"path": 42}),
+                          ("Glob", {"pattern": 42}),
+                          ("Glob", {"pattern": None, "path": []})):
+            d, _, _ = self._decide(tool, inp)
+            self.assertIn(d, ("allow", "deny"), (tool, inp))
+
+    def test_a_non_string_cwd_allows(self):
+        self._task()
+        d, _, _ = guard.decide({"tool_name": "Read", "tool_input": {"file_path": "x"},
+                                "cwd": 42}, env={})
+        self.assertEqual(d, "allow")
+
+
 class BashIsTheObviousBypass(_Bus):
     def test_grep_into_the_scope_via_bash_is_denied(self):
         self._task()

@@ -159,7 +159,7 @@ but it means the single most natural cheat (`Grep` for the symbol, repo-wide)
 gets a nudge rather than a deny. Accepted: the alternative blocks the lead from
 grepping its own source while any task is open, which would get the guard
 switched off within a day. A nudge that names the in-flight task is the honest
-trade.
+trade. (The first implementation did not even nudge — see *Self-review*.)
 
 The `team` allowlist is first-word only. `cd src && team send …` would be denied
 by its own scope. Acceptable: `team` needs no `cd`, and the deny message says how
@@ -263,6 +263,54 @@ So a task file's mtime is its dispatch time, and past `STALE_AFTER = 3600 s` it
 is not in flight, it is wreckage. The cap is 6× the `--timeout 600` that
 `TEAMCHAT.md` documents, so it cannot lift mid-turn on a grunt that is still
 reading. An unreadable mtime counts as stale: **let go, never hold**.
+
+---
+
+## Self-review, after installing
+
+Read back with an adversary's eye. Three defects, all reproduced with a probe
+before being touched, all in code the original 27 tests passed.
+
+**The guard was inverted whenever the lead was not at the bus root.** A tool's
+paths are relative to the tool's `cwd`; a task's scope is relative to the bus
+root. `decide()` resolved *both* against the root. Measured, `cwd = <root>/sub`,
+scope `src/`:
+
+```
+Read ../src/A.cs      -> allow     (it IS the scope)
+Read src/A.cs         -> deny      (sub/src does not exist)
+Bash cat ../src/A.cs  -> allow
+```
+
+Every live probe had run with `cwd == root`, where the two bases coincide, so
+the bug was invisible to exactly the tests and probes that existed. Targets now
+resolve against `cwd`, scopes against `root`, and `_resolve` names which is
+which.
+
+**An omitted `path` was not a target at all.** `Grep {"pattern": "secret"}` —
+no `path` key, meaning the whole repo — produced no target and returned a silent
+`allow`. The one reach the spec singles out as "the single most natural cheat"
+was the one reach that got no nudge. A missing path now means `.`, so it nudges;
+`Glob {"pattern": "src/**"}` with no `path` denies, as it always should have.
+
+**`decide()` raised, despite its docstring.** `{"command": 42}` →
+`AttributeError` from `shlex.split`, and `{"pattern": 42}` → `TypeError` from
+`Path()`. `main()` catches `Exception` and fails open, so the hook survived —
+but `decide()` is also the module's public entry point for the "call it from the
+other guard" fallback, where nothing would catch it. Non-string inputs are now
+rejected at the door.
+
+Mutants M41–M46 close all three, including two that re-plant the original bugs
+verbatim.
+
+### What this is not
+
+A sandbox. `Bash`'s targets are the words of its command, so
+`python3 -c "print(open('src/A.cs').read())"` reaches straight through. Closing
+that means parsing arbitrary shell, which cannot be done. The guard raises the
+cost of the cheat from *reflex* to *deliberate act*, which is all a nudge for an
+aligned agent needs to do. A grunt's containment is a worktree; the lead's is
+this hook plus its own judgement.
 
 ### Accepted, not fixed
 

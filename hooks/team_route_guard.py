@@ -45,8 +45,6 @@ TEAM = ".team"
 # in flight, it is wreckage -- a lead that died, or a tmux server that was
 # killed -- and the guard must not hold its scope hostage forever.
 STALE_AFTER = 3600.0
-SKIP_TOOLS = frozenset()          # every matched tool is considered
-PATH_TOOLS = {"Read": "file_path", "Grep": "path", "Glob": "path"}
 
 # `team send grunt1 --scope src/foo` names src/foo on its own command line. Once
 # that task is open, a guard without this allowlist denies every subsequent team
@@ -122,16 +120,28 @@ def open_scopes(root: Path, now: float | None = None) -> list[tuple[str, str, st
     return out
 
 
-def _resolve(root: Path, raw: str) -> Path | None:
+def _resolve(base: Path, raw: str) -> Path | None:
+    """Resolve `raw` against `base`.
+
+    The base differs by what is being resolved, and getting it wrong inverts
+    the guard. A tool's paths are relative to the tool's **cwd**; a task's
+    scope is relative to the **bus root**. When the lead sits in a
+    subdirectory those are not the same directory, and resolving a target
+    against the root allowed `../src/A.cs` while denying `src/A.cs`.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
     try:
         p = Path(raw)
-        return (p if p.is_absolute() else root / p).resolve()
+        return (p if p.is_absolute() else base / p).resolve()
     except (OSError, ValueError, RuntimeError):
         return None
 
 
-def _literal_prefix(pattern: str) -> str:
+def _literal_prefix(pattern) -> str:
     """`src/**/*.cs` -> `src`. A glob is a path until its first wildcard."""
+    if not isinstance(pattern, str):
+        return ""
     parts = []
     for part in Path(pattern).parts:
         if any(ch in part for ch in "*?["):
@@ -141,15 +151,22 @@ def _literal_prefix(pattern: str) -> str:
 
 
 def _targets(tool: str, inp: dict) -> list[str]:
-    if tool in PATH_TOOLS:
-        raw = inp.get(PATH_TOOLS[tool])
+    if tool == "Read":
+        return [inp.get("file_path")]
+    if tool in ("Grep", "Glob"):
+        raw = inp.get("path")
+        # An omitted `path` means the cwd -- the whole repo. That is the most
+        # natural cheat there is (`Grep` the symbol, no path), and dropping it
+        # here made it the only reach the guard never even nudged about.
+        out = [raw if isinstance(raw, str) and raw else "."]
         if tool == "Glob":
             # Glob's `path` is a root; the pattern carries the reach.
-            pats = [p for p in (_literal_prefix(inp.get("pattern") or ""),) if p]
-            return [raw] * bool(raw) + pats
-        return [raw] if raw else []
+            out.append(_literal_prefix(inp.get("pattern")))
+        return out
     if tool == "Bash":
-        command = inp.get("command") or ""
+        command = inp.get("command")
+        if not isinstance(command, str):
+            return []
         try:
             words = shlex.split(command)
         except ValueError:
@@ -171,8 +188,11 @@ def decide(payload: dict, env: dict | None = None) -> tuple[str, str, str]:
     if not isinstance(inp, dict):
         return "allow", "", ""
 
-    cwd = payload.get("cwd") or os.getcwd()
-    root = bus_root(Path(cwd).resolve())
+    raw_cwd = payload.get("cwd") or os.getcwd()
+    if not isinstance(raw_cwd, str):
+        return "allow", "", ""
+    cwd = Path(raw_cwd).resolve()
+    root = bus_root(cwd)
     if root is None:
         return "allow", "", ""
 
@@ -180,7 +200,8 @@ def decide(payload: dict, env: dict | None = None) -> tuple[str, str, str]:
     if not scopes:
         return "allow", "", ""
 
-    targets = [t for t in (_resolve(root, raw) for raw in _targets(tool, inp) if raw)
+    # Targets against the cwd, scopes against the bus root. See `_resolve`.
+    targets = [t for t in (_resolve(cwd, raw) for raw in _targets(tool, inp))
                if t is not None]
     if not targets:
         return "allow", "", ""
