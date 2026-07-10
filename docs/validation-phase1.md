@@ -13,6 +13,19 @@ This is an accepted, recorded risk — see the spec's "Still unverified" section
 | D | Verification catches a real fabrication | PASS | live: qwen cited `team/protocol.py:10` for `TEMPLATE`, which is on line 8 → `FABRICATED` |
 | E | `pane-died` hook reports a dead grunt | PASS | live: killed the pane's process with `remain-on-exit on`; `failed` message reached the lead's inbox in ~3s |
 
+| F | Verification separates a wrong quote from a wrong answer | PASS | live: grunt1 named the right two methods for "where is zombie damage applied to a building", and got **both** citations wrong — `CharacterFightHandler.cs:508` for `GetDamage` (actual 388) and a `Structure.cs:1575` quote missing its trailing `;` |
+
 D is the project's reason to exist, reproduced against a real model on the first
 task ever sent. It is also why `team verify` now fails closed: at the time of the
 live run it printed `FABRICATED` and exited `0`.
+
+F is the sharper result. The grunt's *answer* was correct — damage is decided in
+`CharacterFightHandler.GetDamage` and lands via `Structure.SubtractHp` →
+`Health.SubtractHp`. Its *citations* were 0/2. A lead reading the prose would have
+believed the line numbers. This is the failure the tool exists to catch, and it is
+not fabrication of the answer: it is fabrication of the evidence for a true answer,
+which is harder to notice and worse to inherit.
+
+F also exposed a verifier bug: the missing semicolon was reported as `FABRICATED`
+("evidence appears nowhere in the file") when the line was right there. `TRUNCATED`
+now names that case. Both remain failures.
