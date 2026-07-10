@@ -19,7 +19,7 @@ module without going through that guard first.
 import shutil
 from pathlib import Path
 
-from team import bus
+from team import bus, worktrees
 
 BUS_SUBDIRS = ("inbox/lead", "results", "staging", "logs", "ids", "dead")
 GITIGNORE_ENTRIES = (".team/", ".qwen/")
@@ -88,7 +88,8 @@ def _update_gitignore(root: Path) -> None:
     bus.atomic_write(path, "\n".join(lines) + "\n")
 
 
-def init(root: Path, force: bool = False) -> list[str]:
+def init(root: Path, force: bool = False, wt=None) -> list[str]:
+    wt = wt if wt is not None else worktrees.Worktrees()
     team = bus.team_dir(root)
     stale = team.exists() or team.is_symlink()
     if stale and not force:
@@ -104,6 +105,21 @@ def init(root: Path, force: bool = False) -> list[str]:
         if init_json.exists():
             prior_meta = bus.read_json(init_json)
         shutil.rmtree(team)
+
+    # A bus removed by hand -- `rm -rf .team` -- takes its worktrees' directories
+    # with it and leaves git's admin entries behind, marked prunable. Left there,
+    # the next `worktree add` for the same agent is refused as already
+    # registered. `prune` removes only entries whose directory is gone, so it is
+    # a no-op on a healthy repo and on the user's own unrelated worktrees.
+    #
+    # It is a repair, not a precondition: a bus is perfectly usable for `find`
+    # tasks in a tree where git cannot run at all. Report the failure, never
+    # raise on it.
+    notes: list[str] = []
+    try:
+        wt.prune(root)
+    except worktrees.WorktreeError as exc:
+        notes.append(f"note: could not prune stale worktrees: {exc}")
 
     for sub in BUS_SUBDIRS:
         (team / sub).mkdir(parents=True, exist_ok=True)
@@ -147,10 +163,44 @@ def init(root: Path, force: bool = False) -> list[str]:
         f"wrote {settings} (grunt: no context files, no write tools, approvalMode=YOLO)",
         "WARNING: while this session is live, your own `qwen` in this repo loses "
         "CLAUDE.md context and runs in YOLO mode. `team down` restores it.",
+        *notes,
     ]
 
 
-def down(root: Path) -> list[str]:
+def _drop_worktrees(root: Path, wt, force: bool) -> list[str]:
+    """Remove every grunt worktree, refusing first if any holds work that was
+    never collected.
+
+    `git worktree remove --force` discards untracked files without a word, and
+    a grunt's entire output is untracked files. Teardown is the one moment a
+    user cannot undo, so it asks before it destroys.
+    """
+    agents = wt.agents(root)
+    if not agents:
+        return []
+
+    if not force:
+        uncollected = {a: lines for a in agents if (lines := wt.dirty(root, a))}
+        if uncollected:
+            detail = "; ".join(
+                f"{a}: {len(lines)} file(s), e.g. {lines[0].split(maxsplit=1)[-1]}"
+                for a, lines in sorted(uncollected.items()))
+            raise StateError(
+                f"refusing to remove worktrees holding uncollected work -- "
+                f"{detail}. Run `team collect <tid>` for the tasks you want, "
+                f"or `team down --force` to discard them."
+            )
+
+    actions = []
+    for agent in agents:
+        wt.remove(root, agent)
+        actions.append(f"removed worktree for {agent}")
+    wt.prune(root)
+    return actions
+
+
+def down(root: Path, force: bool = False, wt=None) -> list[str]:
+    wt = wt if wt is not None else worktrees.Worktrees()
     team = bus.team_dir(root)
     actions: list[str] = []
 
@@ -161,6 +211,10 @@ def down(root: Path) -> list[str]:
         init_json = team / "init.json"
         if init_json.exists():
             meta = bus.read_json(init_json)
+        # Before rmtree: the worktrees live *inside* .team, and deleting their
+        # directories out from under git leaves prunable admin entries behind.
+        # This also raises before anything irreversible has happened.
+        actions += _drop_worktrees(root, wt, force)
 
     settings, backup = _qwen_settings(root), _backup(root)
     if backup.exists():

@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-from team import bus, config, log, ops, panes, verify, wait
+from team import bus, config, log, ops, panes, verify, wait, worktrees
 from team.config import StateError
 from team.schema import SchemaError
 
@@ -46,8 +46,25 @@ def cmd_init(args, root):
     return OK
 
 
+def cmd_worktree_up(args, root):
+    """Give every grunt in the roster a private worktree. Idempotent: an agent
+    that already has one is left alone, so re-running after adding a pane is
+    safe. The lead never gets one -- it works in the main tree."""
+    wt = worktrees.Worktrees()
+    existing = set(wt.agents(root))
+    made = 0
+    for agent in sorted(_roster(root)):
+        if agent == "lead" or agent in existing:
+            continue
+        print(f"worktree for {agent}: {wt.add(root, agent)}")
+        made += 1
+    if not made:
+        print("all grunts already have a worktree")
+    return OK
+
+
 def cmd_down(args, root):
-    for line in config.down(root):
+    for line in config.down(root, force=args.force):
         print(line)
     return OK
 
@@ -159,13 +176,20 @@ def cmd_verify(args, root):
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="team")
-    ap.add_argument("--root", default=None, help="repo root (default: discover via .git)")
+    ap.add_argument("--root", default=None,
+                    help="bus root (default: nearest ancestor holding .team)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("init"); p.add_argument("--force", action="store_true")
     p.set_defaults(fn=cmd_init)
 
-    sub.add_parser("down").set_defaults(fn=cmd_down)
+    p = sub.add_parser("down")
+    p.add_argument("--force", action="store_true",
+                   help="discard uncollected grunt work in the worktrees")
+    p.set_defaults(fn=cmd_down)
+
+    p = sub.add_parser("worktree").add_subparsers(dest="wtcmd", required=True)
+    p.add_parser("up").set_defaults(fn=cmd_worktree_up)
 
     p = sub.add_parser("send")
     p.add_argument("agent")

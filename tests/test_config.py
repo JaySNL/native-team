@@ -1,11 +1,12 @@
 import json
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from team import bus, config
+from team import bus, config, worktrees
 
 
 class ConfigTest(unittest.TestCase):
@@ -286,3 +287,105 @@ class LostProvenanceTest(unittest.TestCase):
         config.init(self.root, force=True)
         config.down(self.root)
         self.assertEqual(json.loads((q / "settings.json").read_text()), {"mine": True})
+
+
+class _RealRepo(unittest.TestCase):
+    """Worktree behaviour needs a real git repo; the rest of this file fakes
+    `.git` with a bare directory."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self._git("init", "-q", ".")
+        self._git("config", "user.email", "t@t.t")
+        self._git("config", "user.name", "t")
+        (self.root / "a.txt").write_text("hi\n")
+        self._git("add", "-A")
+        self._git("commit", "-qm", "init")
+        config.init(self.root)
+        bus.write_json(bus.team_dir(self.root) / "roster.json",
+                       {"lead": {"pane": "0"}, "grunt1": {"pane": "1"}})
+        self.wt = worktrees.Worktrees()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _git(self, *args):
+        subprocess.run(["git", *args], cwd=str(self.root), check=True,
+                       capture_output=True, text=True)
+
+    def _registered(self):
+        out = subprocess.run(["git", "worktree", "list"], cwd=str(self.root),
+                             capture_output=True, text=True).stdout
+        return out
+
+
+class DownWorktreeTest(_RealRepo):
+    def test_down_refuses_when_a_worktree_holds_uncollected_work(self):
+        p = self.wt.add(self.root, "grunt1")
+        (p / "Plugin.cs").write_text("class X {}\n")
+
+        with self.assertRaises(config.StateError) as cm:
+            config.down(self.root)
+
+        msg = str(cm.exception)
+        self.assertIn("grunt1", msg)
+        self.assertIn("Plugin.cs", msg)
+        self.assertIn("--force", msg)
+        # Nothing was destroyed: the refusal happens before any deletion.
+        self.assertTrue(p.is_file() or (p / "Plugin.cs").is_file())
+        self.assertTrue(bus.team_dir(self.root).is_dir())
+
+    def test_down_force_discards_the_work_and_removes_everything(self):
+        p = self.wt.add(self.root, "grunt1")
+        (p / "Plugin.cs").write_text("class X {}\n")
+
+        config.down(self.root, force=True)
+
+        self.assertFalse(bus.team_dir(self.root).exists())
+        self.assertNotIn("grunt1", self._registered())
+
+    def test_down_removes_a_clean_worktree_without_force(self):
+        self.wt.add(self.root, "grunt1")
+        actions = config.down(self.root)
+        self.assertIn("removed worktree for grunt1", actions)
+        self.assertFalse(bus.team_dir(self.root).exists())
+        self.assertNotIn("grunt1", self._registered())
+
+    def test_down_leaves_no_prunable_admin_entry_behind(self):
+        self.wt.add(self.root, "grunt1")
+        config.down(self.root)
+        self.assertNotIn("prunable", self._registered())
+
+    def test_a_plain_directory_under_work_is_not_treated_as_a_worktree(self):
+        """`git status` inside a non-worktree dir resolves to the enclosing
+        repo and reports the whole main tree. Without the `.git` check, a
+        stray directory would make `down` refuse forever."""
+        (worktrees.work_dir(self.root) / "leftover").mkdir(parents=True)
+        (self.root / "dirty-main-tree.txt").write_text("x\n")
+        self.assertEqual(self.wt.agents(self.root), [])
+        config.down(self.root)   # must not raise
+        self.assertFalse(bus.team_dir(self.root).exists())
+
+
+class InitPruneTest(_RealRepo):
+    def test_init_prunes_after_the_bus_was_removed_by_hand(self):
+        self.wt.add(self.root, "grunt1")
+        shutil.rmtree(bus.team_dir(self.root))   # `rm -rf .team`, no `down`
+        self.assertIn("prunable", self._registered())
+
+        config.init(self.root)
+
+        self.assertNotIn("grunt1", self._registered())
+        # And the agent's name is free again.
+        self.wt.add(self.root, "grunt1")
+
+    def test_init_reports_but_survives_an_unusable_git(self):
+        class Broken:
+            def prune(self, root):
+                raise worktrees.WorktreeError("git exploded")
+            def agents(self, root):
+                return []
+        lines = config.init(self.root, force=True, wt=Broken())
+        self.assertTrue(any("could not prune" in l for l in lines))
+        self.assertTrue(bus.team_dir(self.root).is_dir())

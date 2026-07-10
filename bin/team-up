@@ -83,4 +83,12 @@ with open(path, "w", encoding="utf-8") as fh:
     json.dump(roster, fh, indent=2)
     fh.write("\n")
 PY
+
+# Give each grunt its private worktree. A build task's containment check --
+# "this grunt changed only what it declared" -- is meaningless in a tree the
+# lead and the other grunts also write to. Non-fatal: `find` tasks, which are
+# read-only and run in the main tree, do not need one.
+python3 -m team worktree up || \
+  echo "warning: no grunt worktrees; build tasks will refuse. find tasks are unaffected." >&2
+
 echo "session $SESSION up with $GRUNTS grunt(s). Attach: tmux attach -t $SESSION"
