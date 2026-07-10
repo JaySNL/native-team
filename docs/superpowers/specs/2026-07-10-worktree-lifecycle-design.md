@@ -1,6 +1,7 @@
 # Worktree lifecycle — design
 
-**Status:** proposed. Nothing below is implemented.
+**Status:** implemented, then amended. Read **Amendment 1** at the bottom before
+the two sections it supersedes.
 
 **Goal:** give each grunt a private working tree, so that "what did this grunt
 change?" is answerable by looking at one directory.
@@ -55,6 +56,9 @@ The **bus stays in the main tree**. There is exactly one `.team/`.
 
 ### The pane's cwd stays the main tree
 
+> **Superseded by Amendment 1 (below).** This section is wrong, and live task 013
+> proved it wrong. Kept for the record; read the amendment for what is built.
+
 Tempting and wrong: launch each grunt pane *inside* its worktree. `init` writes
 `.qwen/settings.json` at the main root — that file is what supplies
 `approvalMode: yolo`, the `excludeTools` lock, and the `context.fileName`
@@ -97,6 +101,9 @@ one true bus. Verified by inspection of the path structure above.
   for a grunt to get wrong.
 
 ### `find` tasks stay in the main tree
+
+> **Superseded by Amendment 1 (below).** `find` tasks now also run in the
+> worktree, and `send` refuses a scope path that is dirty in the main tree.
 
 This is an asymmetry, and it is deliberate.
 
@@ -179,3 +186,121 @@ by name.
 - Letting a grunt commit. Its output is files, and `collect` moves files.
 - Protecting the main tree from a grunt that ignores its cwd. Its shell is
   unrestricted; this is containment against accident.
+
+---
+
+## Amendment 1 — the fence had a gate (2026-07-10)
+
+Written after the first real build task, **013**, run against the live tmux
+session. Everything in this section is measured, not predicted.
+
+### What happened
+
+`team send grunt1 --type build --create probe/WaveTally.cs --build-dir probe`
+
+The grunt's pane log, line 30:
+
+```
+✓ WriteFile Writing to probe/WaveTally.cs
+```
+
+That path is relative to **qwen's project root, which was the main tree**. The
+file landed in the main tree, and only afterwards did the grunt `mkdir` the same
+path inside its worktree and write it again. Both copies are byte-identical
+(`md5 361f8be49b2457426a3baece21f88269`). `git status --porcelain -uall` in the
+main tree shows `?? probe/WaveTally.cs`.
+
+`team verify 013` reported:
+
+```
+build 013: CONTAINMENT — grunt1 changed files it did not declare: ?? Probe.csproj
+EXIT=1
+```
+
+It caught a stray `Probe.csproj` **in the worktree**. It never saw the file in
+the main tree, because `verify_build` inspects only the worktree.
+
+The grunt also ran `dotnet build` in the main tree, and invented the `.csproj`
+when that build failed.
+
+### Three findings
+
+**F1. `excludeTools` does not block `write_file`.** `.qwen/settings.json` on
+disk excluded `write_file`, `replace`, `edit`, `save_memory`, `web_fetch`. The
+pane used `WriteFile` four times. The original spec's claim — "`excludeTools` is
+the only lock that actually holds" — is false. **No qwen configuration prevents a
+grunt from writing.** `coreTools` is ignored; `excludeTools` is ignored for at
+least `write_file`. Containment is the enforcement. There is no other.
+
+**F2. The pane's cwd is qwen's tool sandbox root.** The W1 reasoning was correct
+about the mechanism (qwen resolves its project root by git root, so a pane
+launched in a worktree finds no `.qwen/settings.json` at the main root) and
+picked the wrong horn. Leaving the pane in the main root makes every unqualified
+tool path — `WriteFile`, `Shell` without a `cd` — address the main tree, which is
+precisely the tree the containment check cannot see. The task file said `cd
+<worktree>` and the grunt did prefix its *shell* calls with it; that discipline
+does not extend to the file tools, which take no cwd.
+
+**F3. `result_done` ran twice.** Observed order: `done` → `add` → `done`. The
+first sealed and announced (message 014); `result_add` then re-created a staging
+file for a sealed task; the second `done` was correctly refused as
+`already sealed`. No corruption, but a sealed task accepted a new record — a lead
+that has already run `verify` can have its evidence change underneath it.
+
+### The fix
+
+**A1 — the grunt pane's cwd is its worktree.** `git worktree add` runs before
+`split-window`, and the pane is created with `-c <worktree>`. qwen's project root
+is then the worktree, and there is no unqualified path that names the main tree.
+
+**A2 — `.qwen/settings.json` is provisioned into each worktree.** This is what
+made A1 look impossible. It is not: the settings file is written by
+`worktree up`, *before* `send` snapshots the tree, so it lands in the
+containment baseline and `verify` never blames the grunt for it. `down`'s
+dirty-tree guard skips the same prefix. A grunt rewriting its own
+`.team/work/<agent>/.qwen/` is inside its own fence and changes nothing outside
+it; that hole is accepted and named here rather than papered over.
+
+**A3 — `find` tasks move into the worktree too**, because the pane has one cwd.
+A worktree is a detached checkout of `HEAD`, so a grunt now reads **committed**
+code, while `verify` resolves citations against the main tree. Divergence would
+produce a false `FABRICATED` — a loud, closed failure, not a silent wrong answer,
+but still noise. So `send` refuses up front:
+
+> `send --type find` runs `git status --porcelain -uall -- <scope paths>` in the
+> main tree. Any output, and the task is refused (exit `3`) naming the dirty
+> file. `--allow-dirty` opts out. With no `--scope`, there is nothing to check
+> and nothing is refused.
+
+This converts a stale read into a precondition the lead must clear, and it costs
+one `git status` per dispatch.
+
+**A4 — `verify_build` also checks the main tree, narrowly.** A new status
+`ESCAPED`, checked *before* `CONTAINMENT`: none of the declared `--create` paths
+may exist in the main tree. This is exactly the 013 failure and it has no false
+positives, because `compose_build_task` now refuses at dispatch if a `--create`
+path already exists in the main tree. `--replace` still deletes only the
+worktree copy — a file in the lead's own tree is never deleted by this tool, and
+`collect` would refuse to overwrite it anyway. Move it aside by hand.
+
+It deliberately does **not** diff the whole main tree. The lead edits the main
+tree while a grunt works; a general diff would fire on the lead's own work, and a
+check that cries wolf is a check people pass `--lenient` to. A1 is the fence.
+A4 is the tripwire on the one gate we watched a grunt walk through.
+
+**A5 — the protocol stops lying.** `TEMPLATE` said "You have no write tools."
+It is replaced by an instruction, not a claim of impossibility. `BUILD_TEMPLATE`
+no longer tells the grunt to `cd` into its worktree — it is already there.
+
+**A6 — `result_add` refuses on a sealed task**, so a task's evidence is
+write-once in both directions.
+
+### What this costs
+
+- A `find` task on a file you have edited but not committed is refused. Commit,
+  or pass `--allow-dirty` and read the citation with that in mind.
+- Each worktree carries an untracked `.qwen/`. It is baselined, and `collect`
+  never looks at it.
+- `team up` must create worktrees before it creates panes. If `worktree up`
+  fails, the panes fall back to the main root with a warning, and build tasks
+  refuse (`no worktree for <agent>`) exactly as before.

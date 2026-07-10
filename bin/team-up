@@ -34,12 +34,42 @@ quote_path() {
 # `team-up` does not clean them up, same as any other tmpdir.)
 HOOKDIR="$(mktemp -d -t team-up-hooks.XXXXXX)"
 
+# roster.json is machine data, so it is written by json.dump -- never piped
+# through `python3 -m json.tool`. Python 3.14's json.tool honours FORCE_COLOR
+# even when stdout is a file, so it emitted ANSI escapes into the JSON and
+# every `team send` died with "unreadable bus file". Caught on the first real
+# fan-out run, 2026-07-10.
+#
+# Written before the panes exist, because `team worktree up` reads it and the
+# worktrees must exist before a pane can be opened inside one.
+python3 - "$TEAM/roster.json" "$SESSION" "$GRUNTS" <<'PY'
+import json, sys
+path, session, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
+roster = {"lead": {"pane": f"{session}:0.0", "backend": "claude"}}
+for i in range(1, n + 1):
+    roster[f"grunt{i}"] = {"pane": f"{session}:0.{i}", "backend": "qwen"}
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(roster, fh, indent=2)
+    fh.write("\n")
+PY
+
+# Give each grunt its private worktree, and its `.qwen/settings.json` inside it.
+# A grunt pane's cwd IS its worktree: qwen resolves its project root from cwd,
+# and its file tools take no cwd of their own -- a pane rooted in the main tree
+# writes into the main tree, where containment cannot see it (measured, task
+# 013). Non-fatal: without a worktree the pane falls back to $ROOT, `find` tasks
+# still work, and `send --type build` refuses.
+python3 -m team worktree up || \
+  echo "warning: no grunt worktrees; build tasks will refuse. find tasks are unaffected." >&2
+
 tmux new-session -d -s "$SESSION" -c "$ROOT" 'claude'
 tmux pipe-pane -o -t "$SESSION:0.0" "cat >> $(quote_path "$TEAM/logs/lead.log")"
 
 for i in $(seq 1 "$GRUNTS"); do
   name="grunt$i"
-  tmux split-window -t "$SESSION:0" -c "$ROOT" 'qwen'
+  cwd="$TEAM/work/$name"
+  [ -d "$cwd" ] || cwd="$ROOT"
+  tmux split-window -t "$SESSION:0" -c "$cwd" 'qwen'
   tmux select-layout -t "$SESSION:0" tiled
   pane="$SESSION:0.$i"
   tmux pipe-pane -o -t "$pane" "cat >> $(quote_path "$TEAM/logs/$name.log")"
@@ -67,29 +97,6 @@ for i in $(seq 1 "$GRUNTS"); do
   tmux set-hook -p -t "$pane" pane-died "run-shell $(quote_path "$hookscript")"
 
 done
-
-# roster.json is machine data, so it is written by json.dump -- never piped
-# through `python3 -m json.tool`. Python 3.14's json.tool honours FORCE_COLOR
-# even when stdout is a file, so it emitted ANSI escapes into the JSON and
-# every `team send` died with "unreadable bus file". Caught on the first real
-# fan-out run, 2026-07-10.
-python3 - "$TEAM/roster.json" "$SESSION" "$GRUNTS" <<'PY'
-import json, sys
-path, session, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
-roster = {"lead": {"pane": f"{session}:0.0", "backend": "claude"}}
-for i in range(1, n + 1):
-    roster[f"grunt{i}"] = {"pane": f"{session}:0.{i}", "backend": "qwen"}
-with open(path, "w", encoding="utf-8") as fh:
-    json.dump(roster, fh, indent=2)
-    fh.write("\n")
-PY
-
-# Give each grunt its private worktree. A build task's containment check --
-# "this grunt changed only what it declared" -- is meaningless in a tree the
-# lead and the other grunts also write to. Non-fatal: `find` tasks, which are
-# read-only and run in the main tree, do not need one.
-python3 -m team worktree up || \
-  echo "warning: no grunt worktrees; build tasks will refuse. find tasks are unaffected." >&2
 
 BRIEF="$(python3 -m team brief 2>/dev/null || true)"
 

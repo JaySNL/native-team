@@ -2,12 +2,13 @@
 
 `team init` mutates the target repo: it writes `.qwen/settings.json` so that a
 grunt qwen pane does not autoload `AGENTS.md`/`CLAUDE.md`/`QWEN.md` (measured:
-qwen loads them from the git root and `/clear` does not drop them), does not
-wedge on an approval prompt (`approvalMode: yolo`), and cannot use its write
-tools (`excludeTools` -- `coreTools` allowlists are measured to be ignored by
-qwen, so `excludeTools` is the only lock that actually holds; see the brief).
-Everything `init` touches is recorded in `.team/init.json` so `team down` can
-put it back.
+qwen loads them from the git root and `/clear` does not drop them) and does not
+wedge on an approval prompt (`approvalMode: yolo`). Everything `init` touches is
+recorded in `.team/init.json` so `team down` can put it back.
+
+The same settings are provisioned into every grunt worktree, because that is
+where the grunt pane's cwd is and qwen reads its config from the git root it
+finds there.
 
 Both `init(force=True)` and `down` delete `.team`. Deleting the wrong
 directory here means deleting a user's working tree, so every deletion goes
@@ -26,6 +27,13 @@ BUS_SUBDIRS = ("inbox/lead", "results", "staging", "logs", "ids", "dead",
 GITIGNORE_ENTRIES = (".team/", ".qwen/")
 TEAM_DIRNAME = ".team"
 
+# `excludeTools` is defence in depth and NOTHING MORE. Measured on task 013: a
+# pane running with exactly these settings called `WriteFile` four times. qwen
+# ignores `coreTools` allowlists, and ignores `excludeTools` for at least
+# `write_file`. No configuration in this file prevents a grunt from writing any
+# file its shell can reach. The pane's cwd (its worktree) and the containment
+# check are the enforcement; this dict is a hint. Never write a comment, a
+# docstring, or a protocol line that claims a grunt "has no write tools".
 GRUNT_SETTINGS = {
     "context": {"fileName": ["TEAM_GRUNT_CONTEXT.md"]},
     "tools": {
@@ -166,6 +174,20 @@ def init(root: Path, force: bool = False, wt=None) -> list[str]:
         "CLAUDE.md context and runs in YOLO mode. `team down` restores it.",
         *notes,
     ]
+
+
+def provision(work: Path) -> Path:
+    """Write the grunt settings into a worktree, whose git root -- and so whose
+    qwen project root -- is the worktree itself.
+
+    Called by `worktree up`, before any `send` snapshots the tree, so the file
+    is already there when containment takes its baseline. `worktrees.dirty`
+    filters `PROVISIONED` regardless, so ordering is belt and braces.
+    """
+    settings = work / ".qwen" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    bus.write_json(settings, GRUNT_SETTINGS)
+    return settings
 
 
 def _drop_worktrees(root: Path, wt, force: bool) -> list[str]:

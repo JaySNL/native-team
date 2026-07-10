@@ -128,18 +128,28 @@ Nothing enforces this rule. It is on you.
 
 ## What a grunt is
 
-`qwen3-coder-256k`, running locally, with no write tools and an **unrestricted
-shell**. It can therefore write files, and has: told to fix a compile error, one
-ran `rm Probe.cs && echo -e "..." > Probe.cs`, regenerating the file from memory
-and silently dropping a `using` directive it judged unnecessary.
+`qwen3-coder-256k`, running locally, with an **unrestricted shell and working
+write tools**. `.qwen/settings.json` excludes `write_file`; qwen ignores that
+(measured, task 013 — it called `WriteFile` four times). Nothing configures a
+grunt into read-only. Told to fix a compile error, one ran
+`rm Probe.cs && echo -e "..." > Probe.cs`, regenerating the file from memory and
+silently dropping a `using` directive it judged unnecessary.
+
+Its containment is not a permission. It is **where it stands**: its pane's cwd is
+its own git worktree, so an unqualified path names that worktree and not your
+tree.
 
 So:
 
 - Never ask a grunt to modify an existing file.
 - Never let a grunt run a command that writes outside the repo — in this project
   that means it never runs `build.sh`, which deploys into the game directory.
-- Its scope is advice. Its containment is a git worktree at `.team/work/<agent>`,
-  and only for build tasks.
+- Its scope is advice. Its containment is the worktree it stands in.
+- It reads a checkout of `HEAD`, so `send --type find` refuses a `--scope` path
+  you have edited but not committed. Commit it, or pass `--allow-dirty` and read
+  the citation knowing it points at the committed version.
+- `verify` on a build task fails `ESCAPED` if a declared file turns up in your
+  tree. Delete it and re-send; do not collect it.
 
 It is very good at reading code and reproducing text exactly. It is bad at
 counting lines and bad at judging what is unnecessary. Delegate accordingly.

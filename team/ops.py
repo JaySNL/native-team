@@ -44,8 +44,34 @@ def _read_staging(path: Path) -> dict:
     return obj
 
 
+def _refuse_stale_scope(root: Path, agent: str, scope: list[str], wt) -> None:
+    """A grunt reads its worktree, a detached checkout of HEAD. `verify` reads
+    the main tree. A scope path that differs between them makes the grunt cite
+    the file it actually read and `verify` call the citation fabricated.
+
+    Only checked when the agent has a worktree: without one the pane fell back
+    to the main root, reads the live file, and there is nothing to be stale.
+    """
+    from team import worktrees
+    if not scope or not worktrees.path(root, agent).is_dir():
+        return
+    wt = wt if wt is not None else worktrees.Worktrees()
+    lines = wt.main_dirty(root, scope)
+    if lines:
+        files = ", ".join(worktrees.porcelain_rel(l) for l in lines[:5])
+        raise StateError(
+            f"scope is dirty in the main tree ({files}). {agent} reads a "
+            f"checkout of HEAD, so it would cite the committed file while "
+            f"`team verify` reads yours. Commit, or pass --allow-dirty."
+        )
+
+
 def compose_task(root: Path, agent: str, question: str,
-                 scope: list[str], supersede: bool = False) -> str:
+                 scope: list[str], supersede: bool = False,
+                 allow_dirty: bool = False, wt=None) -> str:
+    if not allow_dirty:
+        _refuse_stale_scope(root, agent, scope, wt)
+
     open_tid = bus.open_task(root, agent)
     if open_tid and not supersede:
         raise StateError(
@@ -119,6 +145,12 @@ def post_message(root: Path, sender: str, mtype: str, task: str, body: str) -> s
 
 def result_add(root: Path, tid: str, rec: dict) -> None:
     schema.validate_record(rec)
+    if bus.result_path(root, tid).exists():
+        # Measured, task 013: a grunt ran `done`, then `add`, then `done`. The
+        # second `done` was refused, but the `add` had already re-created a
+        # staging file for a sealed task -- evidence appearing behind the back
+        # of a lead that had already run `verify`. Write-once means both ends.
+        raise StateError(f"task {tid} is already sealed; it takes no more records")
     path = bus.staging_path(root, tid)
     records = _read_staging(path)["records"] if path.exists() else []
     records.append(rec)
@@ -208,6 +240,21 @@ def compose_build_task(root: Path, agent: str, question: str,
         target = (work / rel).resolve()
         if not target.is_relative_to(work.resolve()):
             raise StateError(f"--create path escapes the worktree: {rel}")
+
+        # The main tree, before the grunt runs. `verify_build`'s ESCAPED check
+        # reads "this declared path must not exist in the main tree" -- which is
+        # only sound if it did not already exist when the task was dispatched.
+        # Refusing here is also what makes `collect` able to promise it will
+        # never overwrite. `--replace` deletes the grunt's stale copy, never the
+        # lead's file.
+        outside = (root / rel).resolve()
+        if outside.is_relative_to(root.resolve()) and outside.exists():
+            raise StateError(
+                f"--create path already exists in the main tree: {rel}. "
+                f"`team collect` would refuse to overwrite it. Move it aside "
+                f"or delete it yourself, then re-send."
+            )
+
         if target.exists():
             if not replace:
                 raise StateError(

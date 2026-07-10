@@ -7,8 +7,13 @@ lead editing one, fails grunt1's check. Containment needs a tree the grunt
 owns.
 
 Placed under `.team/` because `init` already gitignores it, so the main tree's
-`git status` never sees the worktrees. The panes' cwd stays the main root --
-see the worktree spec -- and only a build task's shell commands `cd` in here.
+`git status` never sees the worktrees.
+
+The grunt pane's cwd **is** its worktree (spec Amendment 1). It has to be: qwen
+resolves its project root from cwd, and every file tool it owns -- `WriteFile`
+above all -- resolves relative paths against that root and takes no cwd of its
+own. A pane rooted in the main tree writes into the main tree, where the
+containment check cannot see it. Measured, task 013.
 
 Every subprocess call is an argv list run without a shell, and every one goes
 through `runner` so tests can watch or fake it.
@@ -19,6 +24,22 @@ from pathlib import Path
 from team import bus
 
 WORK = "work"
+
+# Files this tool puts into a grunt's worktree itself. They are not the grunt's
+# work: containment must not blame the grunt for them, `down` must not refuse
+# teardown over them, and `collect` never copies them out. A grunt rewriting its
+# own `.qwen/` is inside its own fence -- it changes nothing outside the
+# worktree, so this exemption is not a hole in containment.
+PROVISIONED = (".qwen/",)
+
+
+def is_provisioned(rel: str) -> bool:
+    return any(rel.startswith(prefix) for prefix in PROVISIONED)
+
+
+def porcelain_rel(line: str) -> str:
+    """`?? sub/A.cs` / ` M a.txt` -> `sub/A.cs` / `a.txt`."""
+    return line.split(maxsplit=1)[-1].strip('"')
 
 
 class WorktreeError(Exception):
@@ -69,14 +90,33 @@ class Worktrees:
         return target
 
     def dirty(self, root: Path, agent: str) -> list[str]:
-        """Porcelain lines for anything modified or untracked in the worktree.
+        """Porcelain lines for anything modified or untracked in the worktree,
+        minus the files this tool provisioned there.
 
         `-uall` is not optional: plain `--porcelain` collapses a new untracked
         directory to a single `?? sub/` entry, so a file written inside one is
         invisible. The whole point of this call is to notice files.
+
+        Filtering `PROVISIONED` here rather than at each call site keeps the
+        containment baseline and the containment check reading the same list.
         """
         return [line for line in
                 self._git(path(root, agent), "status", "--porcelain", "-uall")
+                .splitlines()
+                if line.strip() and not is_provisioned(porcelain_rel(line))]
+
+    def main_dirty(self, root: Path, paths: list[str]) -> list[str]:
+        """Porcelain lines for `paths` in the MAIN tree.
+
+        A grunt reads a detached checkout of HEAD, while `verify` resolves its
+        citations against the main tree. If a scope path differs between the
+        two, the grunt cites the file it read and `verify` calls it fabricated.
+        `send` asks this first and refuses rather than dispatch a stale read.
+        """
+        if not paths:
+            return []
+        return [line for line in
+                self._git(root, "status", "--porcelain", "-uall", "--", *paths)
                 .splitlines() if line.strip()]
 
     def is_ignored(self, root: Path, agent: str, rel: str) -> bool:

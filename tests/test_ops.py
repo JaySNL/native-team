@@ -67,9 +67,24 @@ class OpsTest(unittest.TestCase):
         tid = ops.compose_task(self.root, "grunt1", "q", [])
         ops.result_add(self.root, tid, dict(REC))
         ops.result_done(self.root, tid, "grunt1")
-        ops.result_add(self.root, tid, dict(REC))
         with self.assertRaises(config.StateError):
             ops.result_done(self.root, tid, "grunt1")
+
+    def test_a_sealed_task_takes_no_more_records(self):
+        """Measured, task 013: a grunt ran done -> add -> done. The second done
+        was refused, but the add had already re-staged a record for a task the
+        lead may have verified."""
+        tid = ops.compose_task(self.root, "grunt1", "q", [])
+        ops.result_add(self.root, tid, dict(REC))
+        ops.result_done(self.root, tid, "grunt1")
+
+        with self.assertRaises(config.StateError) as cm:
+            ops.result_add(self.root, tid, dict(REC))
+        self.assertIn("already sealed", str(cm.exception))
+        self.assertFalse(bus.staging_path(self.root, tid).exists())
+
+        sealed = bus.read_json(bus.result_path(self.root, tid))
+        self.assertEqual(len(sealed["records"]), 1)
 
     def test_reply_requires_prior_blocked_message(self):
         tid = ops.compose_task(self.root, "grunt1", "q", [])

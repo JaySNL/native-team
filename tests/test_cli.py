@@ -351,3 +351,29 @@ class BriefTest(unittest.TestCase):
             with self.subTest(argv=argv):
                 cli.build_parser().parse_args(argv)   # must not SystemExit
                 self.assertIn(argv[0], text)
+
+
+class WorktreeErrorTest(unittest.TestCase):
+    """A failing git worktree operation is a refusal (exit 3), never a
+    traceback. `team up` runs `worktree up` in repos that may have no commits
+    and reports its own warning on a non-zero exit."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        import subprocess
+        subprocess.run(["git", "init", "-q", "."], cwd=str(self.root), check=True,
+                       capture_output=True)          # no commits: HEAD is unborn
+        config.init(self.root)
+        bus.write_json(bus.team_dir(self.root) / "roster.json",
+                       {"lead": {"pane": "t:0.0"}, "grunt1": {"pane": "t:0.1"}})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_worktree_up_on_an_unborn_head_is_refused_not_crashed(self):
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = cli.main(["--root", str(self.root), "worktree", "up"])
+        self.assertEqual(code, cli.REFUSED)
+        self.assertIn("no commits", err.getvalue())

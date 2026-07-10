@@ -44,7 +44,8 @@ If you cannot proceed, do not guess and do not write a scratch file:
 
     team msg --blocked --task {tid} "your question here"
 
-Do not edit any file. You have no write tools.
+Do not create, edit, or delete any file. Your citations are the only output.
+You are reading a checkout of the last commit, not anyone's edits since.
 """
 
 
@@ -55,9 +56,9 @@ TASK {tid}
 WHAT TO BUILD:
 {question}
 
-WORK IN THIS DIRECTORY -- prefix every shell command with it:
+YOUR WORKTREE -- you are already in it. Do not cd out of it:
 
-    cd {workdir}
+    {workdir}
 
 CREATE EXACTLY THESE FILES, and no others:
 {create}

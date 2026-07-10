@@ -68,17 +68,24 @@ def cmd_brief(args, root):
 
 
 def cmd_worktree_up(args, root):
-    """Give every grunt in the roster a private worktree. Idempotent: an agent
-    that already has one is left alone, so re-running after adding a pane is
-    safe. The lead never gets one -- it works in the main tree."""
+    """Give every grunt in the roster a private worktree, and put the grunt
+    settings inside it -- the pane's cwd is the worktree, so that is the git
+    root qwen reads its config from.
+
+    Idempotent: an agent that already has one keeps it, and is re-provisioned,
+    so re-running after `init` rewrote the settings is safe. The lead never gets
+    a worktree -- it works in the main tree."""
     wt = worktrees.Worktrees()
     existing = set(wt.agents(root))
     made = 0
     for agent in sorted(_roster(root)):
-        if agent == "lead" or agent in existing:
+        if agent == "lead":
             continue
-        print(f"worktree for {agent}: {wt.add(root, agent)}")
-        made += 1
+        work = worktrees.path(root, agent) if agent in existing else wt.add(root, agent)
+        config.provision(work)
+        if agent not in existing:
+            print(f"worktree for {agent}: {work}")
+            made += 1
     if not made:
         print("all grunts already have a worktree")
     return OK
@@ -116,7 +123,8 @@ def cmd_send(args, root):
             replace=args.replace)
     else:
         tid = ops.compose_task(root, args.agent, args.question, args.scope or [],
-                               supersede=args.supersede)
+                               supersede=args.supersede,
+                               allow_dirty=args.allow_dirty)
     p.clear_context(pane)
     p.send_line(pane, f"do task {bus.task_path(root, args.agent, tid).relative_to(root)}")
     print(f"sent task {tid} to {args.agent}")
@@ -242,6 +250,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--question", default="")
     p.add_argument("--scope", nargs="*")
     p.add_argument("--supersede", action="store_true")
+    p.add_argument("--allow-dirty", action="store_true", dest="allow_dirty",
+                   help="find: dispatch even though a --scope path is "
+                        "uncommitted; the grunt reads the committed version")
     p.add_argument("--reply", metavar="MSG_ID")
     p.add_argument("--type", choices=["find", "build"], default="find")
     p.add_argument("--create", action="extend", nargs="+", default=[],
@@ -321,7 +332,10 @@ def main(argv: list[str]) -> int:
     except SchemaError as exc:
         print(f"schema violation: {exc}", file=sys.stderr)
         return REFUSED
-    except (StateError, bus.BusError) as exc:
+    except (StateError, bus.BusError, worktrees.WorktreeError) as exc:
+        # A failing git worktree operation is a refusal, not a crash: `team up`
+        # runs `worktree up` in repos that may have no commits yet, and prints
+        # its own warning on a non-zero exit. A traceback there is noise.
         print(f"refused: {exc}", file=sys.stderr)
         return REFUSED
     except panes.PaneError as exc:

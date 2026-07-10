@@ -104,6 +104,92 @@ class SendPreconditionTest(_Repo):
         self.assertIn(str(self.work), body)
 
 
+class EscapeTest(_Repo):
+    """Task 013: qwen's WriteFile resolves against its project root and takes no
+    cwd, so a pane rooted in the main tree wrote the declared file THERE -- where
+    the worktree's containment check could never see it."""
+
+    def test_a_declared_file_appearing_in_the_main_tree_is_an_escape(self):
+        tid = self._send()
+        self._grunt_writes("probe/C.cs", GOOD)
+        (self.root / "probe" / "C.cs").write_text(GOOD)   # the 013 failure
+
+        v = buildverify.verify_build(self.root, tid, wt=self.wt)
+        self.assertEqual(v.status, "ESCAPED")
+        self.assertIn("probe/C.cs", v.detail)
+
+    def test_escape_is_reported_even_with_no_worktree_left(self):
+        """A grunt with nowhere to write is exactly who writes into the main
+        tree. NO_WORKTREE would hide the more important fact."""
+        tid = self._send()
+        (self.root / "probe" / "C.cs").write_text(GOOD)
+        self.wt.remove(self.root, "grunt1")
+
+        v = buildverify.verify_build(self.root, tid, wt=self.wt)
+        self.assertEqual(v.status, "ESCAPED")
+
+    def test_escape_is_checked_before_the_compiler_runs(self):
+        calls = []
+
+        class Spy:
+            def __init__(self, real): self.real = real
+            def dirty(self, r, a): return self.real.dirty(r, a)
+            def build(self, *a, **k):
+                calls.append(a)
+                return (0, "should never run")
+
+        tid = self._send()
+        self._grunt_writes("probe/C.cs", GOOD)
+        (self.root / "probe" / "C.cs").write_text(GOOD)
+        self.assertEqual(
+            buildverify.verify_build(self.root, tid, wt=Spy(self.wt)).status,
+            "ESCAPED")
+        self.assertEqual(calls, [])
+
+    def test_send_refuses_when_the_create_path_already_exists_in_the_main_tree(self):
+        """Without this, ESCAPED would fire on a file the lead put there."""
+        (self.root / "probe" / "C.cs").write_text(GOOD)
+        with self.assertRaises(StateError) as cm:
+            self._send()
+        self.assertIn("main tree", str(cm.exception))
+
+    def test_replace_does_not_delete_the_leads_file(self):
+        (self.root / "probe" / "C.cs").write_text("the lead's own work\n")
+        with self.assertRaises(StateError):
+            self._send(replace=True)
+        self.assertEqual((self.root / "probe" / "C.cs").read_text(),
+                         "the lead's own work\n")
+
+
+class ProvisionedSettingsTest(_Repo):
+    """The pane's cwd is the worktree, so qwen reads its settings from there.
+    That file must be invisible to every check that judges the grunt."""
+
+    def test_provisioned_settings_are_not_the_grunts_work(self):
+        config.provision(self.work)
+        self.assertTrue((self.work / ".qwen" / "settings.json").is_file())
+        self.assertEqual(self.wt.dirty(self.root, "grunt1"), [])
+
+    def test_provisioned_settings_do_not_fail_containment(self):
+        config.provision(self.work)
+        tid = self._send()
+        self._grunt_writes("probe/C.cs", GOOD)
+        v = buildverify.verify_build(
+            self.root, tid, wt=FakeBuildTest._Wt(self.wt, 0, "ok"))
+        self.assertEqual(v.status, "PASS")
+
+    def test_provisioned_settings_do_not_block_teardown(self):
+        config.provision(self.work)
+        config.down(self.root, wt=self.wt)          # no --force
+        self.assertFalse((self.root / ".team").exists())
+
+    def test_uncollected_work_still_blocks_teardown(self):
+        config.provision(self.work)
+        self._grunt_writes("probe/C.cs", GOOD)
+        with self.assertRaises(StateError):
+            config.down(self.root, wt=self.wt)
+
+
 class ContainmentTest(_Repo):
     def test_a_file_outside_the_declared_set_fails_containment(self):
         tid = self._send()
@@ -223,6 +309,45 @@ class RealCompilerTest(_Repo):
         v = buildverify.verify_build(self.root, tid2, wt=self.wt)
         self.assertEqual(v.status, "BUILD_FAIL")
         self.assertIn("CS0246", v.detail)
+
+
+class StaleScopeTest(_Repo):
+    """A grunt in a worktree reads HEAD. `verify` reads the main tree. Dispatch
+    a find task over a file that differs and the grunt cites the file it read
+    while verify calls the citation fabricated."""
+
+    def test_a_dirty_scope_path_is_refused(self):
+        (self.root / "a.txt").write_text("edited, not committed\n")
+        with self.assertRaises(StateError) as cm:
+            ops.compose_task(self.root, "grunt1", "where?", ["a.txt"], wt=self.wt)
+        self.assertIn("a.txt", str(cm.exception))
+        self.assertIn("--allow-dirty", str(cm.exception))
+
+    def test_an_untracked_scope_path_is_refused(self):
+        (self.root / "new.txt").write_text("never committed\n")
+        with self.assertRaises(StateError):
+            ops.compose_task(self.root, "grunt1", "where?", ["new.txt"], wt=self.wt)
+
+    def test_allow_dirty_dispatches_anyway(self):
+        (self.root / "a.txt").write_text("edited, not committed\n")
+        tid = ops.compose_task(self.root, "grunt1", "where?", ["a.txt"],
+                               allow_dirty=True, wt=self.wt)
+        self.assertTrue(bus.task_path(self.root, "grunt1", tid).is_file())
+
+    def test_a_clean_scope_path_dispatches(self):
+        tid = ops.compose_task(self.root, "grunt1", "where?", ["a.txt"], wt=self.wt)
+        self.assertTrue(bus.task_path(self.root, "grunt1", tid).is_file())
+
+    def test_no_scope_means_nothing_to_check(self):
+        (self.root / "a.txt").write_text("edited, not committed\n")
+        ops.compose_task(self.root, "grunt1", "where?", [], wt=self.wt)
+
+    def test_without_a_worktree_the_grunt_reads_the_live_tree(self):
+        """No worktree -> the pane fell back to the main root -> it reads the
+        lead's actual file, and there is nothing stale to refuse."""
+        self.wt.remove(self.root, "grunt1")
+        (self.root / "a.txt").write_text("edited, not committed\n")
+        ops.compose_task(self.root, "grunt1", "where?", ["a.txt"], wt=self.wt)
 
 
 class CliDispatchTest(_Repo):

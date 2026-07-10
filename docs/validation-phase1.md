@@ -5,9 +5,10 @@
 | A | Background Bash re-invokes an idle lead | PASS | controller observed run_in_background task-notification re-invoking an idle session, 2026-07-10 |
 | B | qwen honours `coreTools: ["run_shell_command(team)"]` | FAIL | `echo SHELL_RAN` was executed — pane showed `✓ Shell echo SHELL_RAN ... SHELL_RAN` despite `coreTools` scoping the allowlist to `run_shell_command(team)` only |
 
-B failed, so `run_shell_command` stays unrestricted. Read-only is enforced by
-`excludeTools` alone, and a grunt can still mutate files via shell (e.g. `sed -i`).
-This is an accepted, recorded risk — see the spec's "Still unverified" section.
+B failed, so `run_shell_command` stays unrestricted. The conclusion drawn at the
+time — "read-only is enforced by `excludeTools` alone" — was **also wrong**: see
+row I. Nothing enforces read-only. Containment is positional: the grunt pane's
+cwd is its own worktree.
 
 | C | A real qwen grunt round-trips a task through the bus | PASS | live 2026-07-10: `team send` → grunt ran `team result add`/`done` → backgrounded `team wait --for lead` exited 0 |
 | D | Verification catches a real fabrication | PASS | live: qwen cited `team/protocol.py:10` for `TEMPLATE`, which is on line 8 → `FABRICATED` |
@@ -47,3 +48,12 @@ which is harder to notice and worse to inherit.
 F also exposed a verifier bug: the missing semicolon was reported as `FABRICATED`
 ("evidence appears nowhere in the file") when the line was right there. `TRUNCATED`
 now names that case. Both remain failures.
+
+| I | `excludeTools` blocks qwen's write tools | FAIL | live task 013: pane trace shows `✓ WriteFile Writing to probe/WaveTally.cs` four times, with `"excludeTools": ["write_file", …]` on disk |
+| J | A build task's containment check sees everything the grunt wrote | FAIL | live task 013: the grunt's first `WriteFile` landed in the **main tree** (qwen's project root = the pane's cwd); `verify_build` inspects only the worktree and reported `CONTAINMENT` for a different, worktree-local file while never seeing this one |
+| K | A build grunt fixes its own compiler errors and stays in bounds | PASS | live 013: the declared `probe/WaveTally.cs` compiles (`Build succeeded.`) and its citation verifies exactly |
+| L | `bus_root()` finds the outer bus from inside a worktree | PASS | live 013: `team result add` run from `.team/work/grunt1` reached `<root>/.team/staging` |
+
+I and J are the same root cause and are fixed together in the worktree spec's
+Amendment 1: the grunt pane's cwd is now its worktree, `verify_build` gained
+`ESCAPED`, and no document in this repo claims a grunt lacks write tools.

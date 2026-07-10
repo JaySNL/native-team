@@ -39,9 +39,11 @@ Every claim here comes from the live dogfood session of 2026-07-10, against
 | 1 | 001, 005 | Six cold citations. **Every quoted source line byte-perfect. Every line number wrong** (−4, −120, +228). The grunt called its `Read` tool and estimated the position. |
 | 2 | 007, 009 | Told to use `grep -n`, the same grunt on the same question cites exactly. 2/2 and 3/3 PASS, cold, no answers given. |
 | 3 | 011 | Given a project with a deliberate `CS0246`, the grunt ran `dotnet build`, read its own compiler error, fixed the source, rebuilt until green, and cited the line it added. **No lead intervention.** |
-| 4 | 011 | It has no write tools (`excludeTools`), so it wrote through the shell: first `sed -i`, then `rm Probe.cs && echo -e "..." > Probe.cs`. |
+| 4 | 011 | It wrote through the shell: first `sed -i`, then `rm Probe.cs && echo -e "..." > Probe.cs`. Read at the time as evidence that `excludeTools` had disarmed its write tools. **It had not** — see obs 7; the model simply chose the shell that run. |
 | 5 | 011 | The re-emitted file was byte-identical **except that `using System;` was silently deleted** — the model judged it unnecessary. |
 | 6 | 011 | It stayed inside the declared directory. |
+| 7 | 013 | `excludeTools` does not block `write_file`. The pane called `WriteFile` four times with those settings on disk. **No qwen configuration makes a grunt read-only.** |
+| 8 | 013 | Its first `WriteFile` went to the **main tree** — qwen's file tools resolve against its project root (the pane's cwd) and take no cwd. Containment, which inspects only the worktree, never saw it. Fixed by rooting the pane in its worktree; see the worktree spec, Amendment 1. |
 
 Observation 1 and 5 are the same fact seen twice: **these models reproduce text
 faithfully and reason about position and necessity badly.** That is exactly the
@@ -155,6 +157,7 @@ worktree**:
 
 | Status | Check |
 |---|---|
+| `ESCAPED` | no `--create` path exists in the **main tree**. Checked first, and before the worktree even has to exist. Sound because `send` refuses to dispatch when one already does. |
 | `CONTAINMENT` | `git status --porcelain -uall` now, minus the snapshot's `tree`, must be a subset of `--create`. No snapshot entry may have changed state. |
 | `NOT_CREATED` | every `--create` path exists and is a file |
 | `BUILD_FAIL` | `--build-cmd` in `--build-dir` exits non-zero. First 20 lines of stderr are the detail. |
@@ -163,6 +166,12 @@ worktree**:
 Because each grunt owns its worktree, a concurrent build task by another grunt,
 and any edit the lead makes to the main tree, are both invisible to this check.
 That is the entire reason the worktree spec exists.
+
+`ESCAPED` is deliberately narrow — the declared paths, not a main-tree diff. The
+lead edits the main tree while a grunt works, so a general diff would fire on the
+lead's own work every run, and a check that cries wolf gets `--lenient`'d. The
+pane's cwd is the fence. `ESCAPED` is the tripwire on the one gate a grunt was
+measured walking through.
 
 If the grunt also ran `team result add`, those citations verify as they do
 today, with paths resolved against the worktree. A build task with zero

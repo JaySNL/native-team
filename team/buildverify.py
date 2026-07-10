@@ -14,7 +14,8 @@ from pathlib import Path
 
 from team import bus, worktrees
 
-STATUSES = ("PASS", "CONTAINMENT", "NOT_CREATED", "BUILD_FAIL", "NO_WORKTREE")
+STATUSES = ("PASS", "ESCAPED", "CONTAINMENT", "NOT_CREATED", "BUILD_FAIL",
+            "NO_WORKTREE")
 
 MAX_DETAIL_LINES = 20
 
@@ -46,11 +47,26 @@ def _unexpected(before: list[str], now: list[str], allowed: set[str]) -> list[st
     for line in now:
         if line in baseline:
             continue
-        # "?? sub/A.cs" / " M a.txt" -> "sub/A.cs" / "a.txt"
-        rel = line.split(maxsplit=1)[-1].strip('"')
+        rel = worktrees.porcelain_rel(line)
         if rel not in allowed:
             out.append(line)
     return out
+
+
+def _escaped(root: Path, created: list[str]) -> list[str]:
+    """Declared files that turned up in the MAIN tree.
+
+    Measured, task 013: qwen's `WriteFile` resolves against its project root and
+    takes no cwd, so a pane rooted in the main tree wrote the declared file
+    there. `compose_build_task` refuses to dispatch if the path already exists
+    in the main tree, so anything found here appeared during the task.
+
+    Deliberately not a full main-tree diff. The lead edits the main tree while
+    the grunt works; a general diff would fire on the lead's own work every run,
+    and a check that cries wolf gets `--lenient`'d. The pane's cwd is the fence.
+    This is the tripwire on the one gate a grunt was measured walking through.
+    """
+    return [rel for rel in created if (root / rel).exists()]
 
 
 def verify_build(root: Path, tid: str, wt=None) -> TaskVerdict:
@@ -58,6 +74,15 @@ def verify_build(root: Path, tid: str, wt=None) -> TaskVerdict:
     snap = bus.read_json(bus.snapshot_path(root, tid))
     agent = snap["agent"]
     created = list(snap["create"])
+
+    # Before NO_WORKTREE: a grunt that wrote into the main tree because it had
+    # no worktree to write into is exactly the failure worth naming.
+    escaped = _escaped(root, created)
+    if escaped:
+        return TaskVerdict(tid, "ESCAPED",
+                           f"{agent} wrote outside its worktree, into the main "
+                           f"tree: {', '.join(escaped)}. Delete those, then "
+                           f"re-send.")
 
     work = worktrees.path(root, agent)
     if not work.is_dir():
