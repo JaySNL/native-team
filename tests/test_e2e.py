@@ -22,6 +22,7 @@ are load-bearing for how it's written -- see comments at point of use:
     so "kill the pane" below signals the pane's real PID rather than
     calling `kill-pane`.
 """
+import json
 import os
 import shlex
 import shutil
@@ -279,3 +280,49 @@ class EndToEndTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(shutil.which("tmux"), "tmux not installed")
+class TeamUpRosterTest(unittest.TestCase):
+    """`team-up` must write machine-readable roster.json under any environment.
+
+    Python 3.14's `json.tool` honours FORCE_COLOR even when stdout is a file,
+    so piping through it wrote ANSI escapes into the JSON and every
+    `team send` failed with "unreadable bus file". Reproduced on the first
+    real fan-out run.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.session = f"team-test-{os.getpid()}"
+        self.addCleanup(lambda: subprocess.run(
+            ["tmux", "kill-session", "-t", self.session],
+            stderr=subprocess.DEVNULL, check=False))
+
+    def test_roster_is_valid_json_even_with_force_color_set(self):
+        repo = Path(__file__).resolve().parent.parent
+        env = dict(os.environ, FORCE_COLOR="3", PYTHONPATH=str(repo),
+                   TEAM_SESSION=self.session)
+        subprocess.run([str(repo / "bin" / "team"), "init"],
+                       cwd=self.root, env=env, check=True,
+                       stdout=subprocess.DEVNULL)
+        # Replace the interactive backends: this test is about roster.json,
+        # not about booting claude/qwen.
+        up = (repo / "bin" / "team-up").read_text()
+        up = up.replace("'claude'", "'sleep 30'").replace("'qwen'", "'sleep 30'")
+        script = self.root / "team-up-test"
+        script.write_text(up)
+        script.chmod(0o755)
+
+        subprocess.run([str(script), "2"], cwd=self.root, env=env, check=True,
+                       stdout=subprocess.DEVNULL)
+
+        raw = (self.root / ".team" / "roster.json").read_bytes()
+        self.assertNotIn(b"\x1b", raw, "roster.json contains ANSI escapes")
+        roster = json.loads(raw)
+        self.assertEqual(sorted(roster), ["grunt1", "grunt2", "lead"])
+        self.assertEqual(roster["grunt2"]["pane"], f"{self.session}:0.2")
+        self.assertEqual(roster["lead"]["backend"], "claude")

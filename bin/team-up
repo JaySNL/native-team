@@ -12,7 +12,7 @@
 set -euo pipefail
 
 GRUNTS="${1:-1}"
-SESSION="team"
+SESSION="${TEAM_SESSION:-team}"
 ROOT="$(git rev-parse --show-toplevel)"
 TEAM="$ROOT/.team"
 
@@ -37,7 +37,6 @@ HOOKDIR="$(mktemp -d -t team-up-hooks.XXXXXX)"
 tmux new-session -d -s "$SESSION" -c "$ROOT" 'claude'
 tmux pipe-pane -o -t "$SESSION:0.0" "cat >> $(quote_path "$TEAM/logs/lead.log")"
 
-roster='{"lead":{"pane":"'"$SESSION"':0.0","backend":"claude"}}'
 for i in $(seq 1 "$GRUNTS"); do
   name="grunt$i"
   tmux split-window -t "$SESSION:0" -c "$ROOT" 'qwen'
@@ -67,12 +66,21 @@ for i in $(seq 1 "$GRUNTS"); do
   chmod +x "$hookscript"
   tmux set-hook -p -t "$pane" pane-died "run-shell $(quote_path "$hookscript")"
 
-  roster=$(printf '%s' "$roster" | python3 -c "
-import json, sys
-r = json.load(sys.stdin)
-r['$name'] = {'pane': '$pane', 'backend': 'qwen'}
-json.dump(r, sys.stdout)")
 done
 
-printf '%s\n' "$roster" | python3 -m json.tool > "$TEAM/roster.json"
+# roster.json is machine data, so it is written by json.dump -- never piped
+# through `python3 -m json.tool`. Python 3.14's json.tool honours FORCE_COLOR
+# even when stdout is a file, so it emitted ANSI escapes into the JSON and
+# every `team send` died with "unreadable bus file". Caught on the first real
+# fan-out run, 2026-07-10.
+python3 - "$TEAM/roster.json" "$SESSION" "$GRUNTS" <<'PY'
+import json, sys
+path, session, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
+roster = {"lead": {"pane": f"{session}:0.0", "backend": "claude"}}
+for i in range(1, n + 1):
+    roster[f"grunt{i}"] = {"pane": f"{session}:0.{i}", "backend": "qwen"}
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(roster, fh, indent=2)
+    fh.write("\n")
+PY
 echo "session $SESSION up with $GRUNTS grunt(s). Attach: tmux attach -t $SESSION"
