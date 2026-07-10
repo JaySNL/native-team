@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-from team import bus, config, log, ops, panes, verify, wait, worktrees
+from team import bus, collect, config, log, ops, panes, verify, wait, worktrees
 from team.config import StateError
 from team.schema import SchemaError
 
@@ -75,6 +75,12 @@ def cmd_worktree_up(args, root):
         made += 1
     if not made:
         print("all grunts already have a worktree")
+    return OK
+
+
+def cmd_collect(args, root):
+    for line in collect.collect(root, args.task):
+        print(line)
     return OK
 
 
@@ -206,6 +212,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("brief")
     p.add_argument("--show", action="store_true", help="print the brief, not its path")
     p.set_defaults(fn=cmd_brief)
+
+    p = sub.add_parser("collect")
+    p.add_argument("task")
+    p.set_defaults(fn=cmd_collect)
 
     p = sub.add_parser("worktree").add_subparsers(dest="wtcmd", required=True)
     p.add_parser("up").set_defaults(fn=cmd_worktree_up)

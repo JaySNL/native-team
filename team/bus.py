@@ -122,6 +122,16 @@ def staging_path(root: Path, tid: str) -> Path:
     return team_dir(root) / "staging" / f"{tid}.json"
 
 
+def snapshot_path(root: Path, tid: str) -> Path:
+    """Where `send --type build` records what a task was allowed to create.
+
+    Written before the task is announced, so it is the lead's own statement of
+    intent, not the grunt's report of what it did. `verify` and `collect` both
+    read it; neither trusts the worktree to describe itself.
+    """
+    return team_dir(root) / "snapshots" / f"{tid}.json"
+
+
 def dead_path(root: Path, tid: str) -> Path:
     return team_dir(root) / "dead" / tid
 

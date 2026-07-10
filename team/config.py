@@ -21,7 +21,8 @@ from pathlib import Path
 
 from team import bus, worktrees
 
-BUS_SUBDIRS = ("inbox/lead", "results", "staging", "logs", "ids", "dead")
+BUS_SUBDIRS = ("inbox/lead", "results", "staging", "logs", "ids", "dead",
+               "snapshots")
 GITIGNORE_ENTRIES = (".team/", ".qwen/")
 TEAM_DIRNAME = ".team"
 
