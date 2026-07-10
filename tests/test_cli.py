@@ -56,23 +56,44 @@ class CliTest(unittest.TestCase):
         self.assertEqual(self.run_cli("init")[0], 3)
         self.assertEqual(self.run_cli("init", "--force")[0], 0)
 
-    def test_verify_pass_and_strict_fail(self):
+    def _sealed_task(self):
         self.run_cli("init")
         (bus.team_dir(self.root) / "inbox" / "grunt1").mkdir(parents=True)
         tid = ops.compose_task(self.root, "grunt1", "q", ["a.py"])
         ops.result_add(self.root, tid, {"file": "a.py", "line": 1,
                                         "symbol": "x", "evidence": "x = 1"})
         ops.result_done(self.root, tid, "grunt1")
+        return tid
+
+    def _corrupt_the_line(self, tid):
+        bad = bus.read_json(bus.result_path(self.root, tid))
+        bad["records"][0]["line"] = 2
+        bus.write_json(bus.result_path(self.root, tid), bad)
+
+    def test_verify_passes_clean_result_with_exit_zero(self):
+        tid = self._sealed_task()
         code, out = self.run_cli("verify", tid)
         self.assertEqual(code, 0)
         self.assertIn("1 PASS", out)
 
-        bad = bus.read_json(bus.result_path(self.root, tid))
-        bad["records"][0]["line"] = 2
-        bus.write_json(bus.result_path(self.root, tid), bad)
-        code, out = self.run_cli("verify", tid, "--strict")
+    def test_verify_fails_closed_by_default(self):
+        """The whole point of the project. A lead running
+        `team verify $t && use_result` must not trust a fabricated citation
+        because it forgot a flag. Observed live: qwen cited line 10 for a
+        symbol on line 8, and a permissive default exited 0.
+        """
+        tid = self._sealed_task()
+        self._corrupt_the_line(tid)
+        code, out = self.run_cli("verify", tid)
         self.assertEqual(code, 1)
         self.assertIn("OFF_BY", out)
+
+    def test_verify_lenient_is_the_deliberate_opt_out(self):
+        tid = self._sealed_task()
+        self._corrupt_the_line(tid)
+        code, out = self.run_cli("verify", tid, "--lenient")
+        self.assertEqual(code, 0)
+        self.assertIn("OFF_BY", out, "a lenient exit must still print the failure")
 
     def test_result_add_schema_violation_exits_3(self):
         self.run_cli("init")

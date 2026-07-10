@@ -241,8 +241,12 @@ class EndToEndTest(unittest.TestCase):
         self.assertTrue(statuses & {"OFF_BY", "FABRICATED"}, statuses)
         self.assertTrue(verify.any_failed(verdicts))
 
-        cli_verify = self._team("verify", "001", "--strict", check=False)
+        # Fails closed with no flag: `team verify $t && use_result` must not
+        # trust the fabricated citation this grunt just staged.
+        cli_verify = self._team("verify", "001", check=False)
         self.assertEqual(cli_verify.returncode, 1, cli_verify.stdout)
+        lenient = self._team("verify", "001", "--lenient", check=False)
+        self.assertEqual(lenient.returncode, 0, lenient.stdout)
         self.assertTrue(
             "OFF_BY" in cli_verify.stdout or "FABRICATED" in cli_verify.stdout,
             cli_verify.stdout,

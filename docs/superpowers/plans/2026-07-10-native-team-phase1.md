@@ -15,7 +15,11 @@
 - **Stdlib only.** No third-party runtime dependencies. Tests use `unittest`, not pytest.
 - **Python 3.14.6**, invoked as `python3`.
 - **Exit codes are contract**, used by the lead's Bash to branch:
-  `0` ok · `1` verify FAIL under `--strict` · `2` pane gone · `3` refused (schema violation or invalid state) · `4` timeout.
+  `0` ok · `1` verify FAIL (fails closed; `--lenient` forces `0`) · `2` pane gone · `3` refused (schema violation or invalid state) · `4` timeout.
+
+  Amended after the live milestone: qwen cited line 10 for a symbol on line 8, `verify` printed
+  `FABRICATED`, and the permissive default exited `0`. A lead running `team verify $t && use_result`
+  would have trusted it. Verification now fails closed.
 - **Atomic writes everywhere.** Write a tempfile in the same directory, then `os.replace`. A poller must never observe half a JSON document.
 - **Task ids are zero-padded 3-digit strings** (`"001"`), allocated by `O_EXCL` creation of `.team/ids/NNN`.
 - **`evidence` comparison is `actual.strip() == evidence.strip()`.** Whitespace drift tolerated; content must match exactly.

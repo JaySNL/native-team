@@ -1,6 +1,6 @@
 """Argument parsing, wiring, and the exit-code contract.
 
-  0 ok · 1 verify FAIL under --strict · 2 pane gone
+  0 ok · 1 verify FAIL (unless --lenient) · 2 pane gone
   3 refused (schema violation or invalid state) · 4 timeout
 """
 import argparse
@@ -131,8 +131,11 @@ def cmd_verify(args, root):
     print(verify.render_table(args.task, verdicts))
     if args.show:
         print(json.dumps(payload["records"], indent=2))
+    # Fail closed. A lead running `team verify $t && use_result` must not
+    # trust a fabricated citation because it forgot a flag. Measured grunt
+    # accuracy: 2/5, 0/4, 3/4. `--lenient` is the deliberate opt-out.
     failed = verify.any_failed(verdicts)
-    return VERIFY_FAIL if (failed and args.strict) else OK
+    return OK if (args.lenient or not failed) else VERIFY_FAIL
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -194,7 +197,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("verify")
     p.add_argument("task")
     p.add_argument("--show", action="store_true")
-    p.add_argument("--strict", action="store_true")
+    p.add_argument("--lenient", action="store_true",
+                   help="exit 0 even when a citation fails verification")
     p.set_defaults(fn=cmd_verify)
 
     return ap
