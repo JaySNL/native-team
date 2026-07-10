@@ -49,6 +49,33 @@ class VerifyTest(unittest.TestCase):
             self.root,
             self.rec(symbol="Heal", evidence="    public void HealEverything() {"))
         self.assertEqual(v.status, "FABRICATED")
+        self.assertIn("appears nowhere", v.detail)
+
+    def test_partial_quote_of_cited_line_is_truncated_not_fabricated(self):
+        # A live grunt dropped the trailing semicolon and was told its
+        # citation was invented. Right line, incomplete quote.
+        v = verify.verify_record(
+            self.root,
+            self.rec(line=5, symbol="return", evidence="return true"))
+        self.assertEqual(v.status, "TRUNCATED")
+        self.assertIn("return true;", v.detail)
+
+    def test_truncated_is_still_a_failure(self):
+        v = verify.verify_record(
+            self.root,
+            self.rec(line=5, symbol="return", evidence="return true"))
+        self.assertTrue(verify.any_failed([v]))
+
+    def test_partial_quote_of_a_different_line_stays_fabricated(self):
+        # `TryHeal` occurs only on line 4; citing line 6 with a fragment of it
+        # is not a truncation of line 6, so the lead must not be told the
+        # cited line "contains the quote".
+        v = verify.verify_record(
+            self.root,
+            self.rec(line=6, evidence="bool TryHeal"))
+        self.assertEqual(v.status, "FABRICATED")
+        self.assertIn("inside line(s) 4", v.detail)
+        self.assertNotIn("appears nowhere", v.detail)
 
     def test_symbol_not_in_evidence_detected(self):
         v = verify.verify_record(self.root, self.rec(symbol="Nonexistent"))

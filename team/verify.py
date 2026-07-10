@@ -8,7 +8,7 @@ a Verdict.
 from dataclasses import dataclass
 from pathlib import Path
 
-STATUSES = ("PASS", "OFF_BY", "FABRICATED", "SYMBOL_MISMATCH",
+STATUSES = ("PASS", "OFF_BY", "TRUNCATED", "FABRICATED", "SYMBOL_MISMATCH",
             "NO_FILE", "OUT_OF_TREE", "UNREADABLE", "MALFORMED")
 
 REQUIRED_FIELDS = ("file", "line", "symbol", "evidence")
@@ -115,6 +115,27 @@ def _verify_record(root: Path, rec: dict) -> Verdict:
             detail = (f"cited {cited}, evidence matches {len(matches)} "
                        f"lines (first: {actual})")
         return Verdict(rec, "OFF_BY", detail)
+
+    # Below here the citation fails either way; the only question is what to
+    # tell the lead. A live grunt quoted `SubtractHp(dmg, reason)` for a line
+    # reading `SubtractHp(dmg, reason);` -- right file, right line, right
+    # symbol, one missing semicolon -- and was told the evidence appeared
+    # nowhere in the file. That is a false accusation, and it points the lead
+    # at re-asking the whole question rather than at re-quoting one line.
+    # A partial quote never passes: full-line equality is what pins the line
+    # number down, and `symbol` alone matches every line the symbol occurs on.
+    if 1 <= cited <= len(lines) and want in lines[cited - 1]:
+        return Verdict(rec, "TRUNCATED",
+                       f"line {cited} contains the quote but is not equal to it; "
+                       f"full line is {lines[cited - 1].strip()!r}")
+
+    partial = [i + 1 for i, line in enumerate(lines) if want in line]
+    if partial:
+        shown = ", ".join(str(n) for n in partial[:3])
+        more = f" (+{len(partial) - 3} more)" if len(partial) > 3 else ""
+        return Verdict(rec, "FABRICATED",
+                       f"evidence is not a full line anywhere in {file_field}; "
+                       f"it appears inside line(s) {shown}{more}, not {cited}")
 
     return Verdict(rec, "FABRICATED",
                    f"evidence appears nowhere in {file_field}")

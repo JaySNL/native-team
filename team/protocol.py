@@ -22,7 +22,8 @@ For every finding, run exactly one command per citation:
     team result add --task {tid} --file <path> --line <n> \\
         --symbol <name> --evidence '<the exact source line, copied verbatim>'
 
-`--evidence` must be the FULL source line as it appears in the file. It is
+`--evidence` must be the FULL source line as it appears in the file, including
+any trailing `;` or `{{`. Leading indentation is ignored; nothing else is. It is
 re-read and compared. A guessed line number will be detected and rejected.
 `--symbol` must appear inside `--evidence`.
 `--file` should be relative to the repo root, e.g. `src/A.cs`.
