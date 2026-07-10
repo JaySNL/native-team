@@ -2,8 +2,13 @@
 
 **Status:** proposed. Nothing below is implemented.
 
+**Depends on:** `2026-07-10-worktree-lifecycle-design.md`. A build task's safety
+check is "the grunt changed only what it declared," which is unsound in a shared
+working tree. That spec gives each grunt a private one. Build the worktree
+lifecycle first; without it, nothing here holds.
+
 **Goal:** let a grunt produce *code* — not just citations — with the compiler as
-the verifier and the tree as the containment boundary.
+the verifier and its own worktree as the containment boundary.
 
 ---
 
@@ -72,15 +77,26 @@ change. Generation is delegated. Mutation is not.
 team send <agent> --type build \
     --question "<what to build>" \
     --create <path> [--create <path> ...] \
-    [--build-dir <dir>] [--build-cmd <cmd>]
+    [--replace] [--build-dir <dir>] [--build-cmd <arg> ...]
 ```
+
+Paths are relative to the grunt's worktree, which is where a build task runs.
 
 - `--type find` is the default and is today's behaviour, unchanged.
 - `--create` declares every path the grunt may bring into existence. **Each must
   not exist at send time**; `send` refuses otherwise (exit `3`). This is what
   makes "never modify" enforceable rather than advisory.
-- `--build-dir` defaults to the repo root. `--build-cmd` defaults to
-  `dotnet build -v q --nologo`.
+- `--replace` makes `send` unlink the declared paths before dispatching, and
+  **only** paths recorded in a prior snapshot for the same task. Without it,
+  a task that sealed `BUILD_FAIL` could never be re-sent: its files now exist.
+  Deletion stays on the lead's side of the fence, bounded to files the tool
+  itself created and recorded. The grunt still deletes nothing.
+- `--build-dir` defaults to the worktree root.
+- `--build-cmd` is an **argv list**, default `dotnet build -v q --nologo`, run
+  with `subprocess.run(argv)` and no shell. It is stored in the bus, which a
+  grunt's unrestricted shell can rewrite — this is not an escalation, since that
+  shell already has arbitrary execution as the user, but there is no reason to
+  hand it a string that something later feeds to `sh`.
 - `--scope` keeps its meaning: files the grunt should read.
 
 `send` writes `.team/snapshots/<tid>.json` before announcing the task:
@@ -88,14 +104,27 @@ team send <agent> --type build \
 ```json
 {
   "task": "011",
+  "agent": "grunt1",
   "create": ["probe/Probe.cs"],
   "build_dir": "probe",
-  "build_cmd": "dotnet build -v q --nologo",
-  "tree": ["?? probe/Probe.csproj", " M .gitignore"]
+  "build_cmd": ["dotnet", "build", "-v", "q", "--nologo"],
+  "tree": ["?? probe/Probe.csproj"]
 }
 ```
 
-`tree` is the output of `git status --porcelain -uall`, sorted.
+`tree` is `git status --porcelain -uall` **run inside the grunt's worktree**,
+sorted.
+
+### Preconditions `send` checks, rather than assumes
+
+- Every `--create` path resolves inside the worktree and does not exist (or
+  `--replace`). Same `resolve()`-then-contain rule as `OUT_OF_TREE`.
+- `git -C <worktree> check-ignore -q <build-dir>/obj` and `.../bin` succeed. Run
+  it **in the worktree**, whose `.gitignore` comes from `HEAD` and may differ
+  from the main tree's uncommitted one. If build outputs are not gitignored, the
+  first compile emits hundreds of untracked files and containment fails on every
+  build task forever. Refuse (exit `3`) with that sentence, rather than let it
+  be debugged later.
 
 ### `-uall` is not optional
 
@@ -105,17 +134,24 @@ a violation: plain `--porcelain` collapses an untracked directory to a single
 `?? probe/` entry, so a grunt writing `probe/evil.sh` is invisible. Only
 `-uall` enumerates the files. The claim was right; the evidence for it was not.
 
-**Known hole, recorded not fixed:** `-uall` still omits gitignored paths, so a
-write into `bin/`, `obj/`, or anything in `.gitignore` is not seen. Adding
-`--ignored` would drown the manifest in build output. A grunt that wants to hide
-a write can. This is a containment check against accident, not against malice —
-same standing as the unrestricted `run_shell_command` risk already in the spec.
+**Known hole, recorded not fixed:** `-uall` omits gitignored paths, so a write
+into `bin/`, `obj/`, or anything in `.gitignore` is not seen. Adding `--ignored`
+would drown the manifest in build output. A grunt that wants to hide a write
+can. This is a containment check against accident, not against malice — same
+standing as the unrestricted `run_shell_command` risk already recorded.
 
 ---
 
 ## `team verify <tid>` on a build task
 
-Four checks, in order, first failure wins:
+A build task produces **one task-level `TaskVerdict`**, not a per-record one.
+`Verdict` and `render_table` are per-citation and stay that way; the task
+verdict renders above the (possibly empty) citation table, and `any_failed` ORs
+the two. An implementer who tries to reuse `Verdict` here will end up
+fabricating a record to hang the status on.
+
+Four checks, in order, first failure wins. All run **inside the grunt's
+worktree**:
 
 | Status | Check |
 |---|---|
@@ -124,9 +160,13 @@ Four checks, in order, first failure wins:
 | `BUILD_FAIL` | `--build-cmd` in `--build-dir` exits non-zero. First 20 lines of stderr are the detail. |
 | `PASS` | all of the above |
 
-If the grunt also ran `team result add`, those citations verify exactly as they
-do today and are reported in the same table. A build task with zero citations is
-legal; the build *is* the evidence.
+Because each grunt owns its worktree, a concurrent build task by another grunt,
+and any edit the lead makes to the main tree, are both invisible to this check.
+That is the entire reason the worktree spec exists.
+
+If the grunt also ran `team result add`, those citations verify as they do
+today, with paths resolved against the worktree. A build task with zero
+citations is legal; the build *is* the evidence.
 
 Exit codes are unchanged — `0` ok, `1` verify failed, `2` pane gone, `3` refused,
 `4` timeout. `CONTAINMENT` and `BUILD_FAIL` are both exit `1`. Resist the urge to
@@ -138,21 +178,15 @@ give containment its own code: the contract's value is that a lead can branch on
 The project's `build.sh` deploys shared libraries into the game directory before
 compiling. A grunt is a process with an unrestricted shell running unattended;
 it does not get a command that writes outside the repo. The lead runs `build.sh`
-after `verify` returns `0`.
+after `verify` returns `0` and `team collect` has moved the files across.
 
 ---
 
-## Isolation
+## Getting the work out
 
-Build tasks mutate the working tree. They must run against a **disposable git
-worktree**, never a live checkout. The entire dogfood session ran in a detached
-worktree for exactly this reason, and observation 4 retroactively justifies it.
-
-This spec does **not** add worktree creation to `team up`. Creating and
-destroying worktrees on the user's behalf is a bigger and more dangerous
-decision than anything else here, and it deserves its own design. Until then,
-`team init` prints a warning when it detects a non-detached HEAD, and the
-operator sets up the worktree.
+`verify` passing does not put the code anywhere useful — it lives in the grunt's
+worktree. `team collect <tid>` copies the declared `--create` paths into the
+main tree. Defined in the worktree spec.
 
 ---
 
@@ -191,5 +225,19 @@ Every new branch gets a mutation check before it is called tested.
 - `--modify`. See "The hard rule".
 - `--reply`-driven compiler-error loops. Observation 3 says they are unnecessary;
   build the thing that is needed when it is needed.
-- Worktree lifecycle management.
+- Worktree lifecycle. Its own spec, and a prerequisite of this one.
 - Containment against a hostile grunt.
+
+---
+
+## Build order
+
+1. `bus.bus_root()` and the verb migration (worktree spec). Nothing else works
+   without it, and it is testable on its own.
+2. `team up` / `down` worktree lifecycle, including the `down` refusal on
+   uncollected grunt output.
+3. `team collect`.
+4. `--type build`, `send` preconditions, `TaskVerdict`.
+
+Steps 1–3 are useful before step 4 exists: they make `find` tasks' isolation
+explicit and give `down` a data-loss guard it currently lacks.
