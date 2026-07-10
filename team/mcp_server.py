@@ -86,8 +86,8 @@ TOOLS = [
         "description": (
             "Re-open every cited file and compare the cited line to the quoted "
             "evidence. A grunt's citation is not a fact until this returns "
-            "ok=true. Measured: every quoted line byte-perfect, every line "
-            "number wrong."),
+            "ok=true. Grunts reproduce source text faithfully and locate it "
+            "poorly, so the quote passing says nothing about the line number."),
         "inputSchema": {
             "type": "object",
             "properties": {"task": {"type": "string"}},

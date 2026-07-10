@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "team": {
-      "command": "sh",
-      "args": ["-c", "exec \"$(git rev-parse --show-toplevel)/bin/team-mcp\""]
-    }
-  }
-}

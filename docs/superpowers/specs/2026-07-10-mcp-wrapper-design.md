@@ -1,7 +1,6 @@
 # MCP wrapper — design
 
-**Status:** implemented; verified through the shim; registered in this repo's
-`.mcp.json`.
+**Status:** implemented; verified through the shim; registered at user scope.
 
 **Goal:** give the lead `team_send` / `team_wait` / `team_verify` as tools, so
 its control flow stops depending on shell exit codes it is documented to get
@@ -137,45 +136,52 @@ VERIFY FAILED — do not use these citations, do not open the file. Re-ask.
 <the same table `team verify` prints>
 ```
 
-## Registration
+## Registration: user scope, once
 
-Global registration is wrong for the same reason it was wrong for the route
-guard: an MCP server in `~/.claude.json` starts in *every* project, finds no bus,
-and errors on every call. It belongs in the `.mcp.json` of a repo that runs a
-team.
-
-Three things about `.mcp.json`, all measured with `claude mcp list`, none of them
-guessable:
-
-- **The server's cwd is the directory `claude` was started in, not the repo
-  root.** A session opened in `team/` launches the server in `team/`. So a
-  relative `"command": "./bin/team-mcp"` connects from the root and *fails to
-  connect* from any subdirectory.
-- **`${CLAUDE_PROJECT_DIR}` is not expanded** in `.mcp.json`. It is passed
-  through literally and the exec fails.
-- A project server is **pending approval** until it is accepted interactively or
-  listed in `.claude/settings.local.json` under `enabledMcpjsonServers`. That
-  file is per-machine approval state, and is gitignored.
-
-An absolute path would work and would also bake one developer's home directory
-into a committed file. So the repo resolves itself:
-
-```json
-{"mcpServers": {"team": {
-  "command": "sh",
-  "args": ["-c", "exec \"$(git rev-parse --show-toplevel)/bin/team-mcp\""]}}}
+```sh
+claude mcp add -s user team /home/<you>/Projects/native-team/bin/team-mcp
 ```
 
-Connects from the repo root and from any subdirectory. `bus_root()` walks up, so
-a session started in a subdirectory still finds the bus.
+The server is **repo-agnostic by construction**. `_root()` calls `bus_root()` on
+every tool call rather than caching it at startup, and `bus_root()` walks up from
+the cwd. So one registration serves every project: in a repo with a bus it
+answers about that bus, and in a directory without one it refuses.
 
-One edge, accepted: inside a linked worktree `--show-toplevel` returns the
-worktree, which has no `bin/`. A lead never starts a session in
-`.team/work/<agent>` — that is where a grunt stands, and a grunt has no MCP
-client.
+Verified with the single user-scope server, unchanged:
 
-Verified live: `claude -p` in this repo reports `mcp__team__team_send`,
-`mcp__team__team_wait`, `mcp__team__team_verify`.
+| cwd | `claude mcp list` | `team_verify 001` |
+|---|---|---|
+| `native-team` | ✔ Connected | answers |
+| an unrelated repo | ✔ Connected | — |
+| `/tmp` (not a repo) | ✔ Connected | `refused: no .team bus` |
+| a scratch repo with a bus | ✔ Connected | `ok: false`, `OFF_BY`, "cited 3, actual 2" |
+
+A tool nobody calls costs nothing: the schemas are deferred until used, and a
+call in a bus-less directory returns a clean `refused:` — which is the right
+answer, not a breakage. Headless callers must pass
+`--allowedTools mcp__team__team_verify`; interactive sessions prompt once.
+
+### The `.mcp.json` detour, and why it was wrong
+
+The first attempt registered the server in the repo's own `.mcp.json`, reasoning
+that a global server "finds no bus and errors on every call". That contradicted
+this module's own design — the per-call `_root()` exists precisely so the server
+does not belong to one repo. It also failed to answer the obvious question: what
+registers the server in the *user's* repo, the one that actually runs a team?
+
+Three things measured along the way, kept because they are not in the docs and
+will bite the next person who reaches for `.mcp.json`:
+
+- **A project server's cwd is the directory `claude` was started in, not the repo
+  root.** A session opened in `team/` launches the server in `team/`, so a
+  relative `"./bin/team-mcp"` connects from the root and silently fails to
+  connect from any subdirectory.
+- **`${CLAUDE_PROJECT_DIR}` is not expanded** in `.mcp.json`; it is passed
+  through literally and the exec fails.
+- A project server stays **pending approval** until accepted interactively or
+  listed under `enabledMcpjsonServers` in `.claude/settings.local.json`.
+
+None of it applies now. User scope, absolute path, one line.
 
 ## Verified through the shim
 

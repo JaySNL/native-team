@@ -3,6 +3,3 @@ __pycache__/
 *.pyc
 .superpowers/
 .qwen/
-
-# Local MCP approval state (`enabledMcpjsonServers`), per-machine.
-.claude/settings.local.json
