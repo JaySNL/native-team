@@ -306,6 +306,67 @@ class VerifyTest(unittest.TestCase):
         self.assertIn("1 FAIL", table)
         self.assertTrue(verify.any_failed(vs))
 
+    # ---- Finding 5: non-dict records must not kill the batch ----
+
+    def test_verify_record_none_returns_malformed_not_raises(self):
+        """verify_record with None record should return MALFORMED, not raise TypeError."""
+        v = verify.verify_record(self.root, None)
+        self.assertEqual(v.status, "MALFORMED")
+        self.assertIn("not a dict", v.detail)
+
+    def test_verify_record_int_zero_returns_malformed_not_raises(self):
+        """verify_record with 0 should return MALFORMED, not raise TypeError."""
+        v = verify.verify_record(self.root, 0)
+        self.assertEqual(v.status, "MALFORMED")
+        self.assertIn("not a dict", v.detail)
+
+    def test_verify_record_bool_true_returns_malformed_not_raises(self):
+        """verify_record with True should return MALFORMED, not raise TypeError."""
+        v = verify.verify_record(self.root, True)
+        self.assertEqual(v.status, "MALFORMED")
+        self.assertIn("not a dict", v.detail)
+
+    def test_verify_record_float_returns_malformed_not_raises(self):
+        """verify_record with 1.5 should return MALFORMED, not raise TypeError."""
+        v = verify.verify_record(self.root, 1.5)
+        self.assertEqual(v.status, "MALFORMED")
+        self.assertIn("not a dict", v.detail)
+
+    def test_verify_record_empty_list_returns_malformed(self):
+        """verify_record with [] should return MALFORMED.
+        (This currently passes by accident because 'in' works on lists;
+        after the fix it must still return MALFORMED.)"""
+        v = verify.verify_record(self.root, [])
+        self.assertEqual(v.status, "MALFORMED")
+
+    def test_verify_record_string_returns_malformed(self):
+        """verify_record with "a string" should return MALFORMED.
+        (This currently passes by accident because 'in' works on strings;
+        after the fix it must still return MALFORMED.)"""
+        v = verify.verify_record(self.root, "a string")
+        self.assertEqual(v.status, "MALFORMED")
+
+    def test_verify_records_batch_with_none_returns_all_verdicts(self):
+        """verify_records with [good, None, good] should return 3 verdicts,
+        not raise TypeError and kill the batch."""
+        good = self.rec()
+        vs = verify.verify_records(self.root, [good, None, good])
+        self.assertEqual(len(vs), 3)
+        self.assertEqual(vs[0].status, "PASS")
+        self.assertEqual(vs[1].status, "MALFORMED")
+        self.assertEqual(vs[2].status, "PASS")
+
+    def test_render_table_batch_with_non_dict_record_does_not_raise(self):
+        """render_table over a batch containing non-dict records should not raise."""
+        good = self.rec()
+        v_pass = verify.Verdict(good, "PASS", "")
+        v_malformed = verify.Verdict(None, "MALFORMED", "record is not a dict: NoneType")
+        # Should not raise when rendering
+        table = verify.render_table("005", [v_pass, v_malformed])
+        self.assertIn("2 records", table)
+        self.assertIn("1 PASS", table)
+        self.assertIn("1 FAIL", table)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,9 @@ class Verdict:
 def _malformed_reason(rec: dict) -> str | None:
     """Return a detail string naming the offending field if rec is
     unusable, else None."""
+    if not isinstance(rec, dict):
+        return f"record is not a dict: {type(rec).__name__}"
+
     for key in REQUIRED_FIELDS:
         if key not in rec:
             return f"record missing field: {key!r}"
@@ -128,16 +131,11 @@ def render_table(task_id: str, verdicts: list[Verdict]) -> str:
             f"{passed} PASS, {failed} FAIL")
     rows = []
     for v in verdicts:
-        # Handle records that are not dicts or are dicts with missing keys.
-        if isinstance(v.record, dict):
-            file_val = v.record.get('file', '?')
-            line_val = v.record.get('line', '?')
-            symbol_val = v.record.get('symbol', '?')
-        else:
-            # Record is not a dict; use placeholders for all fields.
-            file_val = '?'
-            line_val = '?'
-            symbol_val = '?'
+        # Normalize record: if not a dict, use empty dict for .get() calls.
+        rec = v.record if isinstance(v.record, dict) else {}
+        file_val = rec.get('file', '?')
+        line_val = rec.get('line', '?')
+        symbol_val = rec.get('symbol', '?')
 
         loc = f"{file_val}:{line_val}"
         row = f"  {v.status:<16} {loc} {symbol_val}"
