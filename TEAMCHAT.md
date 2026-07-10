@@ -123,7 +123,13 @@ The point of a grunt is that reading a 16 MB decompile does not happen in *your*
 context window. The moment you open the file, that saving is gone and you have
 paid for the grunt as well.
 
-Nothing enforces this rule. It is on you.
+A `PreToolUse` hook enforces this, if it is installed: while a task is in flight,
+`Read`, `Grep`, `Glob` and `Bash` are **denied** on anything inside that task's
+`--scope`. A repo-wide `Grep` is allowed with a nudge — the guard blocks reaching
+*into* the scope, not working elsewhere while a grunt reads.
+
+It lifts by itself the moment the task seals. `TEAM_ROUTE_GUARD=0` disables it.
+If it is not installed, nothing enforces this rule and it is on you.
 
 ---
 
