@@ -22,6 +22,14 @@ For every finding, run exactly one command per citation:
     team result add --task {tid} --file <path> --line <n> \\
         --symbol <name> --evidence '<the exact source line, copied verbatim>'
 
+GET EVERY LINE NUMBER FROM `grep -n`:
+
+    grep -n '<pattern>' <file>
+
+The number grep prints before the colon IS the line number. Never count lines
+by eye in a file you have read -- measured: reading the file and estimating
+gets the line wrong nearly every time, even when you quote the line correctly.
+
 `--evidence` must be the FULL source line as it appears in the file, including
 any trailing `;` or `{{`. Leading indentation is ignored; nothing else is. It is
 re-read and compared. A guessed line number will be detected and rejected.

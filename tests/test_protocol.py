@@ -32,6 +32,23 @@ class TaskBodyTest(unittest.TestCase):
         self.assertIsInstance(body, str)
         self.assertIn("where does aggro clamp?", body)
 
+    def test_body_directs_the_grunt_to_grep_for_line_numbers(self):
+        """Measured: a grunt told only to cite a line reads the file and
+        estimates the number, quoting the source correctly and citing it 4 to
+        228 lines off. Told to use `grep -n`, the same grunt on the same
+        question cites both lines exactly. The instruction is load-bearing.
+        """
+        body = protocol.task_body("007", "q", ["a.py"])
+        self.assertIn("grep -n", body)
+
+    def test_template_renders_the_literal_braces_it_documents(self):
+        """TEMPLATE is a .format() string, so a `{` in the prose must be
+        escaped. An unescaped one raises ValueError for every task ever sent.
+        """
+        body = protocol.task_body("007", "q", ["a.py"])
+        self.assertIn("trailing `;` or `{`", body)
+        self.assertNotIn("{{", body)
+
 
 if __name__ == "__main__":
     unittest.main()
