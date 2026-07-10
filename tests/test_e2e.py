@@ -106,6 +106,10 @@ class EndToEndTest(unittest.TestCase):
         script.write_text(
             "#!/bin/sh\n"
             "set -e\n"
+            # This script stands in for a qwen TUI, so it must also stand in for
+            # the prompt `panes.wait_ready` looks for. Without it `team send`
+            # correctly refuses to type into a pane that is not listening.
+            'echo "  YOLO mode (shift + tab to cycle)"\n'
             f"while [ ! -f {shlex.quote(str(taskfile))} ]; do sleep 0.1; done\n"
             f"export PYTHONPATH={shlex.quote(str(REPO_ROOT))}\n"
             f"{py} -m team --root {root} result add --task 001 --file bed.py --line 2 "
@@ -284,12 +288,19 @@ if __name__ == "__main__":
 
 @unittest.skipUnless(shutil.which("tmux"), "tmux not installed")
 class TeamUpRosterTest(unittest.TestCase):
-    """`team-up` must write machine-readable roster.json under any environment.
+    """`team up` writes a machine-readable roster keyed on tmux PANE IDS.
+
+    Two bugs are pinned here.
 
     Python 3.14's `json.tool` honours FORCE_COLOR even when stdout is a file,
-    so piping through it wrote ANSI escapes into the JSON and every
-    `team send` failed with "unreadable bus file". Reproduced on the first
-    real fan-out run.
+    so piping roster.json through it wrote ANSI escapes into the JSON and every
+    `team send` failed with "unreadable bus file". Reproduced on the first real
+    fan-out run.
+
+    And pane *indices* renumber when a pane dies -- kill grunt1 of three and
+    grunt2's pane becomes index 1, so `team send grunt1` types into grunt2's
+    pane. Pane ids never move. This test kills a grunt and proves the surviving
+    grunt's roster entry still names its own pane.
     """
 
     def setUp(self):
@@ -301,28 +312,50 @@ class TeamUpRosterTest(unittest.TestCase):
         self.addCleanup(lambda: subprocess.run(
             ["tmux", "kill-session", "-t", self.session],
             stderr=subprocess.DEVNULL, check=False))
+        self.repo = Path(__file__).resolve().parent.parent
+        self.env = dict(os.environ, FORCE_COLOR="3", PYTHONPATH=str(self.repo))
+        self.env.pop("TMUX", None)          # `up` must create its own session
+        self.env.pop("TMUX_PANE", None)
 
-    def test_roster_is_valid_json_even_with_force_color_set(self):
-        repo = Path(__file__).resolve().parent.parent
-        env = dict(os.environ, FORCE_COLOR="3", PYTHONPATH=str(repo),
-                   TEAM_SESSION=self.session)
-        subprocess.run([str(repo / "bin" / "team"), "init"],
-                       cwd=self.root, env=env, check=True,
-                       stdout=subprocess.DEVNULL)
-        # Replace the interactive backends: this test is about roster.json,
-        # not about booting claude/qwen.
-        up = (repo / "bin" / "team-up").read_text()
-        up = up.replace("'claude'", "'sleep 30'").replace("'qwen'", "'sleep 30'")
-        script = self.root / "team-up-test"
-        script.write_text(up)
+    def _agent(self) -> Path:
+        """A fake agent: prints the prompt `wait_ready` looks for, then idles."""
+        scratch = Path(tempfile.mkdtemp(prefix="team-e2e-agent-"))
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        script = scratch / "agent"
+        script.write_text('#!/bin/sh\necho ">   Type your message or @path"\nexec sleep 60\n')
         script.chmod(0o755)
+        return script
 
-        subprocess.run([str(script), "2"], cwd=self.root, env=env, check=True,
-                       stdout=subprocess.DEVNULL)
+    def _team(self, *args):
+        return subprocess.run([str(self.repo / "bin" / "team"), *args],
+                              cwd=self.root, env=self.env, check=True,
+                              capture_output=True, text=True)
+
+    def test_roster_records_pane_ids_and_survives_a_dead_neighbour(self):
+        agent = self._agent()
+        self._team("init")
+        self._team("up", "2", "--session", self.session,
+                   "--lead-command", str(agent), "--command", str(agent))
 
         raw = (self.root / ".team" / "roster.json").read_bytes()
         self.assertNotIn(b"\x1b", raw, "roster.json contains ANSI escapes")
         roster = json.loads(raw)
         self.assertEqual(sorted(roster), ["grunt1", "grunt2", "lead"])
-        self.assertEqual(roster["grunt2"]["pane"], f"{self.session}:0.2")
-        self.assertEqual(roster["lead"]["backend"], "claude")
+        for name, entry in roster.items():
+            self.assertRegex(entry["pane"], r"^%\d+$", f"{name} is not a pane id")
+        self.assertEqual(len({e["pane"] for e in roster.values()}), 3)
+
+        # grunt1 dies. Its index would be inherited by grunt2; its id cannot be.
+        doomed = roster["grunt1"]["pane"]
+        survivor = roster["grunt2"]["pane"]
+        subprocess.run(["tmux", "kill-pane", "-t", doomed], check=True)
+
+        live = subprocess.run(["tmux", "list-panes", "-t", self.session,
+                                "-F", "#{pane_id}"], capture_output=True, text=True)
+        ids = live.stdout.split()
+        self.assertNotIn(doomed, ids)
+        self.assertIn(survivor, ids)
+
+        p = panes.Panes()
+        self.assertFalse(p.exists(doomed))
+        self.assertTrue(p.exists(survivor))

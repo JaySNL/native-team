@@ -122,6 +122,10 @@ def staging_path(root: Path, tid: str) -> Path:
     return team_dir(root) / "staging" / f"{tid}.json"
 
 
+def roster_path(root: Path) -> Path:
+    return team_dir(root) / "roster.json"
+
+
 def snapshot_path(root: Path, tid: str) -> Path:
     """Where `send --type build` records what a task was allowed to create.
 

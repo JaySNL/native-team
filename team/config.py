@@ -192,29 +192,59 @@ def provision(work: Path) -> Path:
     return settings
 
 
-def _drop_worktrees(root: Path, wt, force: bool) -> list[str]:
-    """Remove every grunt worktree, refusing first if any holds work that was
-    never collected.
-
-    `git worktree remove --force` discards untracked files without a word, and
-    a grunt's entire output is untracked files. Teardown is the one moment a
+def _refuse_if_uncollected(root: Path, wt, force: bool) -> None:
+    """`git worktree remove --force` discards untracked files without a word,
+    and a grunt's entire output is untracked files. Teardown is the one moment a
     user cannot undo, so it asks before it destroys.
+
+    Separated from the removal so that `down` can run it *before* killing any
+    pane. A refused teardown must not have already destroyed the grunts.
     """
+    if force:
+        return
+    uncollected = {a: lines for a in wt.agents(root) if (lines := wt.dirty(root, a))}
+    if uncollected:
+        detail = "; ".join(
+            f"{a}: {len(lines)} file(s), e.g. {lines[0].split(maxsplit=1)[-1]}"
+            for a, lines in sorted(uncollected.items()))
+        raise StateError(
+            f"refusing to remove worktrees holding uncollected work -- "
+            f"{detail}. Run `team collect <tid>` for the tasks you want, "
+            f"or `team down --force` to discard them."
+        )
+
+
+def _kill_grunt_panes(root: Path, killer) -> list[str]:
+    """Kill every grunt pane, never the lead's -- that is where the person who
+    typed `team down` is sitting.
+
+    `killer` is a callable taking a pane target. It is injected rather than
+    imported: this module must keep working if tmux were swapped out, and
+    `panes.py` is the only module allowed to know tmux exists.
+
+    Called after the uncollected check and before the worktrees are removed. A
+    grunt whose worktree is deleted out from under it keeps running in a
+    directory that no longer exists.
+    """
+    if killer is None:
+        return []
+    roster = bus._try_read_obj(bus.roster_path(root)) or {}
+    actions = []
+    for agent, entry in sorted(roster.items()):
+        if agent == "lead" or not isinstance(entry, dict) or not entry.get("pane"):
+            continue
+        killer(entry["pane"])
+        actions.append(f"killed pane for {agent}")
+    return actions
+
+
+def _drop_worktrees(root: Path, wt, force: bool) -> list[str]:
+    """Remove every grunt worktree. Assumes `_refuse_if_uncollected` already
+    ran; it re-checks, because `down` is not the only caller of `config.down`."""
     agents = wt.agents(root)
     if not agents:
         return []
-
-    if not force:
-        uncollected = {a: lines for a in agents if (lines := wt.dirty(root, a))}
-        if uncollected:
-            detail = "; ".join(
-                f"{a}: {len(lines)} file(s), e.g. {lines[0].split(maxsplit=1)[-1]}"
-                for a, lines in sorted(uncollected.items()))
-            raise StateError(
-                f"refusing to remove worktrees holding uncollected work -- "
-                f"{detail}. Run `team collect <tid>` for the tasks you want, "
-                f"or `team down --force` to discard them."
-            )
+    _refuse_if_uncollected(root, wt, force)
 
     actions = []
     for agent in agents:
@@ -224,7 +254,7 @@ def _drop_worktrees(root: Path, wt, force: bool) -> list[str]:
     return actions
 
 
-def down(root: Path, force: bool = False, wt=None) -> list[str]:
+def down(root: Path, force: bool = False, wt=None, killer=None) -> list[str]:
     wt = wt if wt is not None else worktrees.Worktrees()
     team = bus.team_dir(root)
     actions: list[str] = []
@@ -236,9 +266,13 @@ def down(root: Path, force: bool = False, wt=None) -> list[str]:
         init_json = team / "init.json"
         if init_json.exists():
             meta = bus.read_json(init_json)
-        # Before rmtree: the worktrees live *inside* .team, and deleting their
-        # directories out from under git leaves prunable admin entries behind.
-        # This also raises before anything irreversible has happened.
+        # Ordering is the whole safety property. Refuse first, while nothing has
+        # been touched; then kill the panes, so no agent is left running in a
+        # directory that is about to vanish; then remove the worktrees, which
+        # live *inside* .team and would otherwise leave prunable admin entries
+        # behind; then rmtree.
+        _refuse_if_uncollected(root, wt, force)
+        actions += _kill_grunt_panes(root, killer)
         actions += _drop_worktrees(root, wt, force)
 
     settings, backup = _qwen_settings(root), _backup(root)

@@ -5,6 +5,8 @@
 """
 import argparse
 import json
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -33,10 +35,16 @@ DEFAULT_BUILD_CMD = ("dotnet", "build", "-v", "q", "--nologo")
 NO_ROOT_COMMANDS = frozenset({"brief"})
 
 BRIEF = Path(__file__).resolve().parent.parent / "TEAMCHAT.md"
+TEAM_BIN = Path(__file__).resolve().parent.parent / "bin" / "team"
+DEFAULT_SESSION = "team"
 
 
 def _roster(root: Path) -> dict:
-    return bus.read_json(bus.team_dir(root) / "roster.json")
+    return bus.read_json(bus.roster_path(root))
+
+
+def _write_roster(root: Path, roster: dict) -> None:
+    bus.write_json(bus.roster_path(root), roster)
 
 
 def _pane_for(root: Path, agent: str) -> str:
@@ -44,6 +52,24 @@ def _pane_for(root: Path, agent: str) -> str:
     if not entry:
         raise StateError(f"no agent {agent!r} in roster.json")
     return entry["pane"]
+
+
+def _next_grunt(roster: dict) -> str:
+    n = 1
+    while f"grunt{n}" in roster:
+        n += 1
+    return f"grunt{n}"
+
+
+def _grunt_env() -> dict:
+    """`team` on the new pane's PATH, and nothing else.
+
+    A grunt calls `team result add`. Today that resolves only because the shell
+    which ran `team-up` happened to export PYTHONPATH, and panes inherit it --
+    an accident of the dogfood setup. `split-window -e` (measured: reaches the
+    new pane and nothing else) makes it explicit.
+    """
+    return {"PATH": f"{TEAM_BIN.parent}{os.pathsep}{os.environ.get('PATH', '')}"}
 
 
 def _digest(msg: dict) -> str:
@@ -91,28 +117,180 @@ def cmd_worktree_up(args, root):
     return OK
 
 
+def _grunt_worktree(root, name, wt, notes):
+    """The grunt's cwd. A repo with no commits has no HEAD to check out, so it
+    gets the main tree and a warning -- `find` tasks work there, and
+    `send --type build` refuses later on its own terms."""
+    try:
+        work = (worktrees.path(root, name) if name in set(wt.agents(root))
+                else wt.add(root, name))
+    except worktrees.WorktreeError as exc:
+        notes.append(f"warning: no worktree for {name} ({exc}). "
+                     f"find tasks work; build tasks will refuse.")
+        return root
+    config.provision(work)
+    return work
+
+
+def cmd_grunt_add(args, root, p=None):
+    """Create one grunt: worktree, pane, log, death hook, roster entry.
+
+    In that order. The pane must be launched *in* its worktree (a pane rooted in
+    the main tree makes qwen's file tools address the main tree), so the
+    worktree has to exist first. The roster entry is written before the readiness
+    wait: a grunt whose TUI never draws still owns a pane, and the lead needs to
+    be able to find and remove it.
+    """
+    p = p if p is not None else panes.Panes()
+    roster = _roster(root)
+
+    name = args.name or _next_grunt(roster)
+    if name == "lead":
+        raise StateError("'lead' is not a grunt name")
+    if name in roster:
+        raise StateError(f"{name!r} is already in the roster. "
+                         f"Run `team grunt rm {name}` first.")
+
+    target = args.window or os.environ.get("TMUX_PANE")
+    if not target:
+        raise StateError(
+            "not inside tmux, and no --window given. There is no way to guess "
+            "which window you mean, and splitting the wrong one is worse than "
+            "refusing."
+        )
+    if not shutil.which(args.command):
+        raise StateError(f"{args.command!r} is not on PATH")
+
+    notes: list[str] = []
+    wt = worktrees.Worktrees()
+    work = _grunt_worktree(root, name, wt, notes)
+
+    pane = p.split(target, work, args.command, env=_grunt_env())
+    try:
+        p.pipe_pane(pane, bus.team_dir(root) / "logs" / f"{name}.log")
+        p.install_death_hook(pane, panes.write_death_hook(TEAM_BIN, root, name))
+    except Exception:
+        # The pane exists but is not in the roster, so nothing else will ever
+        # find it. An orphaned agent left running in a worktree is worse than
+        # the error that got us here.
+        p.kill(pane)
+        raise
+
+    roster[name] = {"pane": pane, "backend": args.command, "cwd": str(work)}
+    _write_roster(root, roster)
+
+    for note in notes:
+        print(note, file=sys.stderr)
+    p.wait_ready(pane, timeout=args.timeout)
+    print(f"{name}: pane {pane} in {work}")
+    return OK
+
+
+def cmd_grunt_rm(args, root, p=None):
+    p = p if p is not None else panes.Panes()
+    roster = _roster(root)
+    if args.name == "lead" or args.name not in roster:
+        raise StateError(f"no grunt {args.name!r} in the roster")
+
+    wt = worktrees.Worktrees()
+    has_worktree = args.name in set(wt.agents(root))
+    if has_worktree and not args.force:
+        dirty = wt.dirty(root, args.name)
+        if dirty:
+            raise StateError(
+                f"{args.name} holds {len(dirty)} uncollected file(s), e.g. "
+                f"{worktrees.porcelain_rel(dirty[0])}. Run `team collect <tid>`, "
+                f"or pass --force to discard them."
+            )
+
+    # A task left open would make a re-added grunt of the same name refuse its
+    # first dispatch ("already has open task"), and `wait --task` on it would
+    # never return. Same bookkeeping as --supersede.
+    open_tid = bus.open_task(root, args.name)
+    if open_tid:
+        bus.mark_dead(root, open_tid)
+
+    p.kill(roster[args.name]["pane"])
+    if has_worktree:
+        wt.remove(root, args.name)
+        wt.prune(root)
+    del roster[args.name]
+    _write_roster(root, roster)
+    print(f"removed {args.name}" + (f" (task {open_tid} marked dead)" if open_tid else ""))
+    return OK
+
+
+def cmd_up(args, root, p=None):
+    """Register the lead and add `n` grunts.
+
+    Inside tmux the lead is the pane you are in -- the lead runs this through
+    its own shell, so $TMUX_PANE is its pane. Outside tmux a session is created.
+    Grunts default to 0: they are spawned on demand with `team grunt add`.
+    """
+    p = p if p is not None else panes.Panes()
+    roster = _roster(root)
+    if roster and not args.force:
+        raise StateError(
+            f"roster.json already names {', '.join(sorted(roster))}. "
+            f"`team up` would orphan those panes. Pass --force to overwrite it."
+        )
+
+    lead = args.lead_pane or os.environ.get("TMUX_PANE")
+    if os.environ.get("TMUX") and not lead:
+        raise StateError("$TMUX is set but $TMUX_PANE is not; pass --lead-pane <id>")
+
+    if not lead:
+        lead = p.new_session(args.session, root, args.lead_command)
+        print(f"session {args.session} created. Attach: tmux attach -t {args.session}")
+
+    # Pipe before registering. The lead's pane already exists, so a failure here
+    # orphans nothing -- but a roster written first would make the retry demand
+    # --force to overwrite the half-finished state it left behind.
+    p.pipe_pane(lead, bus.team_dir(root) / "logs" / "lead.log")
+    _write_roster(root, {"lead": {"pane": lead, "backend": args.lead_command,
+                                  "cwd": str(root)}})
+    print(f"lead: pane {lead}")
+
+    for _ in range(args.grunts):
+        cmd_grunt_add(argparse.Namespace(
+            name=None, window=lead, command=args.command,
+            timeout=args.timeout), root, p=p)
+
+    if not args.grunts:
+        print("no grunts yet — the lead spawns them with `team grunt add`")
+    print(f"\nIn the lead pane, paste this once:\n    Read {BRIEF} and follow it.")
+    return OK
+
+
 def cmd_collect(args, root):
     for line in collect.collect(root, args.task):
         print(line)
     return OK
 
 
-def cmd_down(args, root):
-    for line in config.down(root, force=args.force):
+def cmd_down(args, root, p=None):
+    # `killer` is injected, not imported: config.py must keep working if tmux
+    # were swapped out. Without it, `down` would delete every grunt's worktree
+    # and leave its qwen running in a directory that no longer exists.
+    p = p if p is not None else panes.Panes()
+    for line in config.down(root, force=args.force, killer=p.kill):
         print(line)
     return OK
 
 
-def cmd_send(args, root):
-    p = panes.Panes()
+def cmd_send(args, root, p=None):
+    p = p if p is not None else panes.Panes()
     pane = _pane_for(root, args.agent)
     if not p.exists(pane):
         print(f"pane {pane} for {args.agent} is gone", file=sys.stderr)
         return PANE_GONE
+    # The pane exists, but a grunt spawned a moment ago may not be listening
+    # yet, and keys typed before its TUI draws are dropped silently.
+    p.wait_ready(pane)
 
     if args.reply:
         rid = ops.reply(root, args.agent, args.reply, args.text)
-        p.send_line(pane, f"do task {bus.task_path(root, args.agent, rid).relative_to(root)}")
+        p.send_line(pane, f"do task {bus.task_path(root, args.agent, rid)}")
         print(f"replied {rid} to {args.agent}")
         return OK
 
@@ -126,7 +304,12 @@ def cmd_send(args, root):
                                supersede=args.supersede,
                                allow_dirty=args.allow_dirty)
     p.clear_context(pane)
-    p.send_line(pane, f"do task {bus.task_path(root, args.agent, tid).relative_to(root)}")
+    # ABSOLUTE. The grunt's cwd is its worktree, which has no `.team/` in it --
+    # the bus lives once, in the main tree. A path relative to the main root
+    # names nothing from where the grunt is standing. Measured live: the grunt
+    # was handed `.team/inbox/grunt1/001.json`, could not open it, guessed the
+    # absolute path, and the task died there.
+    p.send_line(pane, f"do task {bus.task_path(root, args.agent, tid)}")
     print(f"sent task {tid} to {args.agent}")
     return OK
 
@@ -265,6 +448,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("worktree").add_subparsers(dest="wtcmd", required=True)
     p.add_parser("up").set_defaults(fn=cmd_worktree_up)
+
+    p = sub.add_parser("up", help="register the lead pane; optionally add grunts")
+    p.add_argument("grunts", nargs="?", type=int, default=0)
+    p.add_argument("--session", default=DEFAULT_SESSION)
+    p.add_argument("--lead-pane", dest="lead_pane", default=None,
+                   help="override $TMUX_PANE")
+    p.add_argument("--force", action="store_true", help="overwrite a live roster")
+    p.add_argument("--timeout", type=float, default=60.0)
+    # The two agent binaries. Named, not hardcoded, so the pane and roster
+    # machinery can be tested without booting a real model -- and so a lead can
+    # point at a wrapper. Nothing branches on which one is chosen.
+    p.add_argument("--lead-command", dest="lead_command", default="claude")
+    p.add_argument("--command", default="qwen", help="grunt binary")
+    p.set_defaults(fn=cmd_up)
+
+    g = sub.add_parser("grunt").add_subparsers(dest="gcmd", required=True)
+    a = g.add_parser("add")
+    a.add_argument("name", nargs="?", default=None)
+    a.add_argument("--window", default=None, help="tmux target; default $TMUX_PANE")
+    a.add_argument("--command", default="qwen")
+    a.add_argument("--timeout", type=float, default=60.0)
+    a.set_defaults(fn=cmd_grunt_add)
+    r = g.add_parser("rm")
+    r.add_argument("name")
+    r.add_argument("--force", action="store_true", help="discard uncollected work")
+    r.set_defaults(fn=cmd_grunt_rm)
 
     p = sub.add_parser("send")
     p.add_argument("agent")

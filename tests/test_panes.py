@@ -69,27 +69,35 @@ class PanesTest(unittest.TestCase):
             ["tmux", "send-keys", "-t", "team:0.1", "-l", text],
         )
 
-    # --- exists ---
+    # --- exists: measured tmux semantics, not the obvious ones ---
 
-    def test_exists_false_when_has_session_fails(self):
-        runner, p = self.mk(replies=[(1, "")])
-        self.assertFalse(p.exists("team:0.1"))
-        self.assertEqual(runner.calls, [["tmux", "has-session", "-t", "team"]])
-
-    def test_exists_true_when_pane_listed(self):
-        runner, p = self.mk(replies=[(0, ""), (0, "%3\n")])
-        self.assertTrue(p.exists("team:0.1"))
+    def test_exists_probes_the_pane_itself_not_its_window(self):
+        """`list-panes -t <pane>` lists the pane's whole WINDOW. Asking it
+        whether a pane exists answers a different question, and answers yes for
+        a pane that is gone."""
+        runner, p = self.mk(replies=[(0, "%5 0\n")])
+        self.assertTrue(p.exists("%5"))
         self.assertEqual(
             runner.calls,
-            [
-                ["tmux", "has-session", "-t", "team"],
-                ["tmux", "list-panes", "-t", "team:0.1", "-F", "#{pane_id}"],
-            ],
+            [["tmux", "display-message", "-p", "-t", "%5", "#{pane_id} #{pane_dead}"]],
         )
 
-    def test_exists_false_when_pane_list_empty(self):
-        runner, p = self.mk(replies=[(0, ""), (0, "")])
-        self.assertFalse(p.exists("team:0.1"))
+    def test_exists_false_on_empty_stdout_despite_exit_zero(self):
+        """Measured: `display-message -p -t %bogus` exits 0 with no output. The
+        return code cannot be the signal."""
+        runner, p = self.mk(replies=[(0, "\n")])
+        self.assertFalse(p.exists("%99999"))
+
+    def test_exists_false_when_the_pane_is_dead(self):
+        """Measured: send-keys into a pane whose process died (remain-on-exit
+        on) returns 0 and does nothing. `team send` must not call that a
+        success."""
+        runner, p = self.mk(replies=[(0, "%5 1\n")])
+        self.assertFalse(p.exists("%5"))
+
+    def test_exists_false_when_tmux_fails(self):
+        runner, p = self.mk(replies=[(1, "")])
+        self.assertFalse(p.exists("%5"))
 
     # --- capture ---
 
@@ -245,3 +253,94 @@ class TmuxMissingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WaitReadyTest(unittest.TestCase):
+    def mk(self, replies):
+        runner = FakeRunner(replies)
+        return runner, panes.Panes(runner=runner, sleep=lambda _: None)
+
+    def test_returns_once_the_tui_is_drawn(self):
+        runner, p = self.mk([(0, "loading...\n"), (0, "  YOLO mode (shift + tab to cycle)\n")])
+        p.wait_ready("%5", timeout=5.0)
+        self.assertEqual(len(runner.calls), 2)
+
+    def test_a_rotating_placeholder_does_not_unready_a_live_pane(self):
+        """qwen rotates its input placeholder through ghost suggestions. A pane
+        showing `post comments` instead of `Type your message` is not broken --
+        keying readiness on the placeholder refused a healthy grunt."""
+        runner, p = self.mk([(0, "* post comments\n  YOLO mode (shift + tab to cycle)\n")])
+        p.wait_ready("%5", timeout=5.0)
+
+    def test_a_busy_pane_is_still_ready(self):
+        """--supersede must interrupt a working grunt; send_line's Escape is
+        what cancels the turn. Waiting for idleness would wait for the very turn
+        supersede exists to kill."""
+        runner, p = self.mk([(0, "thinking (7.5s . esc to cancel)\n"
+                                 "  YOLO mode (shift + tab to cycle)\n")])
+        p.wait_ready("%5", timeout=5.0)
+        self.assertTrue(panes.BUSY.search("(7.5s . esc to cancel)"))
+
+    def test_raises_when_the_prompt_never_appears(self):
+        """A pane spawned on demand is sent to immediately. Keys typed before
+        the TUI is listening are dropped silently."""
+        runner, p = self.mk([(0, "boot\n")] * 200)
+        with self.assertRaisesRegex(panes.PaneError, "no prompt"):
+            p.wait_ready("%5", timeout=0.0)
+
+    def test_ready_regex_does_not_fire_on_arbitrary_output(self):
+        self.assertIsNone(panes.READY.search("> booting the model, please wait"))
+        self.assertTrue(panes.READY.search("  YOLO mode (shift + tab to cycle)"))
+        self.assertTrue(panes.READY.search("  \u23f8 Ask permissions (shift + tab to cycle)"))
+
+
+class SplitTest(unittest.TestCase):
+    def mk(self, replies):
+        runner = FakeRunner(replies)
+        return runner, panes.Panes(runner=runner, sleep=lambda _: None)
+
+    def test_split_returns_the_new_pane_id_and_tiles(self):
+        runner, p = self.mk([(0, "%17\n"), (0, "")])
+        self.assertEqual(p.split("%4", Path("/w"), "qwen"), "%17")
+        self.assertEqual(runner.calls, [
+            ["tmux", "split-window", "-P", "-F", "#{pane_id}", "-t", "%4",
+             "-c", "/w", "qwen"],
+            ["tmux", "select-layout", "-t", "%4", "tiled"],
+        ])
+
+    def test_split_passes_env_to_the_new_pane_only(self):
+        runner, p = self.mk([(0, "%17\n"), (0, "")])
+        p.split("%4", Path("/w"), "qwen", env={"PATH": "/bin", "A": "b"})
+        self.assertEqual(runner.calls[0][-5:], ["-e", "A=b", "-e", "PATH=/bin", "qwen"])
+
+    def test_split_raises_when_no_pane_id_comes_back(self):
+        runner, p = self.mk([(0, "\n")])
+        with self.assertRaises(panes.PaneError):
+            p.split("%4", Path("/w"), "qwen")
+
+    def test_kill_tolerates_an_already_dead_pane(self):
+        runner, p = self.mk([(1, "")])
+        p.kill("%17")            # must not raise
+        self.assertEqual(runner.calls, [["tmux", "kill-pane", "-t", "%17"]])
+
+
+class DeathHookTest(unittest.TestCase):
+    def test_hook_script_is_written_outside_the_bus_and_quotes_paths(self):
+        script = panes.write_death_hook(
+            Path("/opt/t m/bin/team"), Path("/repo a"), "grunt;1")
+        body = script.read_text()
+        self.assertTrue(script.is_file())
+        self.assertNotIn(".team", str(script))
+        self.assertIn("'/opt/t m/bin/team'", body)
+        self.assertIn("'/repo a'", body)
+        self.assertIn("'grunt;1'", body)
+        self.assertNotIn(" grunt;1 ", body)     # unquoted would end the command
+
+    def test_install_death_hook_sets_remain_on_exit_first(self):
+        runner = FakeRunner()
+        panes.Panes(runner=runner, sleep=lambda _: None).install_death_hook(
+            "%17", Path("/tmp/h.sh"))
+        self.assertEqual(runner.calls, [
+            ["tmux", "set-option", "-p", "-t", "%17", "remain-on-exit", "on"],
+            ["tmux", "set-hook", "-p", "-t", "%17", "pane-died", "run-shell /tmp/h.sh"],
+        ])

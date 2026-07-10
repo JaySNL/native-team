@@ -1,11 +1,12 @@
-#!/usr/bin/env bash
-# `team` — file-based bus for the native multi-terminal agent team.
+#!/bin/sh
+# `team` — the CLI a lead and its grunts both call.
 #
-# `team` is meant to be run from inside whatever repo it manages (a target
-# project's working tree), not from this repo -- so `python3 -m team` cannot
-# rely on cwd to find the `team` package. Resolve this script's own real
-# location (it is normally reached via a symlink on PATH, e.g.
-# ~/.local/bin/team -> .../bin/team) and put that repo root on PYTHONPATH
-# regardless of where the caller cd'd.
-here="$(cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)"
-exec env PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" python3 -m team "$@"
+# Resolves the package from its own location, so `bin/` can be symlinked into
+# ~/.local/bin and a grunt in ANY repo can still run `team result add`. Nothing
+# depends on PYTHONPATH being exported in the shell that launched the session:
+# `team grunt add` puts this directory on the new pane's PATH with
+# `tmux split-window -e`.
+set -e
+self=$(readlink -f "$0")
+repo=$(dirname "$(dirname "$self")")
+PYTHONPATH="$repo${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m team "$@"

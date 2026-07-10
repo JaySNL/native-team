@@ -28,6 +28,27 @@ class _FakePane:
     def send_line(self, target, text):
         self.calls.append(("send_line", target, text))
 
+    def wait_ready(self, target, timeout=60.0):
+        self.calls.append(("wait_ready", target))
+
+    def kill(self, target):
+        self.calls.append(("kill", target))
+
+    def split(self, target, cwd, command, env=None):
+        self.calls.append(("split", target, str(cwd), command))
+        self._next = getattr(self, "_next", 16) + 1
+        return f"%{self._next}"
+
+    def pipe_pane(self, target, logfile):
+        self.calls.append(("pipe_pane", target))
+
+    def install_death_hook(self, target, script):
+        self.calls.append(("install_death_hook", target))
+
+    def new_session(self, session, cwd, command):
+        self.calls.append(("new_session", session))
+        return "%1"
+
 
 class CliTest(unittest.TestCase):
     def setUp(self):
@@ -224,7 +245,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(bus.is_dead(self.root, old_tid))
         self.assertEqual(
-            [c[0] for c in fake.calls], ["exists", "clear_context", "send_line"])
+            [c[0] for c in fake.calls],
+            ["exists", "wait_ready", "clear_context", "send_line"])
 
     def test_send_pane_error_mid_delivery_exits_2_not_traceback(self):
         """A PaneError raised after the exists() check (e.g. the pane dies
@@ -255,7 +277,10 @@ class CliTest(unittest.TestCase):
                 "send", "grunt1", "--reply", "001", "answer text")
         self.assertEqual(code, 3)
         self.assertIn("refused:", out)
-        self.assertEqual(fake.calls, [("exists", "team:0.1")])
+        # wait_ready only captures the pane; send_line, whose leading Escape
+        # would cancel a working grunt's turn, is never reached.
+        self.assertEqual(fake.calls,
+                         [("exists", "team:0.1"), ("wait_ready", "team:0.1")])
 
 
 if __name__ == "__main__":
