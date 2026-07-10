@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# `team` — file-based bus for the native multi-terminal agent team.
+exec python3 -m team "$@"
