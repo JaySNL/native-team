@@ -16,13 +16,32 @@ from team.config import StateError
 
 
 def _messages(root: Path) -> list[dict]:
+    """Read the lead's inbox, skipping any file that will not parse as an
+    object. One corrupt file must not brick `reply` for every agent -- the
+    bus is a directory a human can edit, and `bus.open_task` already tolerates
+    exactly this. Ordering is by the three-digit id, never mtime.
+    """
     box = bus.lead_inbox(root)
-    return [bus.read_json(p) for p in sorted(box.glob("*.json"))]
+    objs = (bus._try_read_obj(p) for p in sorted(box.glob("*.json")))
+    return [o for o in objs if o is not None]
 
 
 def last_message_from(root: Path, agent: str) -> dict | None:
-    mine = [m for m in _messages(root) if m["from"] == agent]
+    mine = [m for m in _messages(root) if m.get("from") == agent]
     return mine[-1] if mine else None
+
+
+def _read_staging(path: Path) -> dict:
+    """A staging file can be hand-written by a grunt, bypassing `result_add`.
+    Surface corruption as StateError, not a raw JSONDecodeError.
+    """
+    obj = bus._try_read_obj(path)
+    if obj is None:
+        raise StateError(f"staging file {path} is unreadable or is not a JSON object")
+    records = obj.get("records")
+    if not isinstance(records, list):
+        raise StateError(f"staging file {path} has no 'records' list")
+    return obj
 
 
 def compose_task(root: Path, agent: str, question: str,
@@ -101,7 +120,7 @@ def post_message(root: Path, sender: str, mtype: str, task: str, body: str) -> s
 def result_add(root: Path, tid: str, rec: dict) -> None:
     schema.validate_record(rec)
     path = bus.staging_path(root, tid)
-    records = bus.read_json(path)["records"] if path.exists() else []
+    records = _read_staging(path)["records"] if path.exists() else []
     records.append(rec)
     bus.write_json(path, {"task": tid, "records": records})
 
@@ -122,7 +141,7 @@ def result_done(root: Path, tid: str, agent: str) -> str:
     if not staging.exists():
         raise StateError(f"task {tid} has no staged records; nothing to seal")
 
-    payload = bus.read_json(staging)
+    payload = _read_staging(staging)
     # Re-validate even though result_add already validated each record on the
     # way in: a staging file can also be written by hand, bypassing
     # result_add entirely. Never seal a record this module hasn't checked.

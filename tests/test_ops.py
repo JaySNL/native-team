@@ -152,3 +152,95 @@ class OpsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MalformedBusFileTest(unittest.TestCase):
+    """Invariant: one bad file must not crash a read of the others.
+
+    The bus is a directory a human can edit, and a grunt can hand-write a
+    staging file. `bus.open_task` already tolerates this; `ops` must too.
+    """
+
+    JUNK = {
+        "truncated": '{"from": "grunt1", ',
+        "zero_byte": "",
+        "null": "null",
+        "array": "[]",
+        "scalar": "3",
+    }
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / ".git").mkdir()
+        config.init(self.root)
+        (bus.team_dir(self.root) / "inbox" / "grunt1").mkdir(parents=True)
+
+    def _plant_good_blocked_message(self):
+        ops.post_message(self.root, "grunt1", "blocked", "001", "need advice")
+
+    def test_junk_sibling_does_not_hide_a_real_message(self):
+        for name, text in self.JUNK.items():
+            with self.subTest(junk=name):
+                box = bus.lead_inbox(self.root)
+                for f in box.glob("*.json"):
+                    f.unlink()
+                # Junk at a LOWER id than the real message, so a crash on it
+                # would happen before the good file is ever reached.
+                (box / "001.json").write_text(text)
+                self._plant_good_blocked_message()
+                last = ops.last_message_from(self.root, "grunt1")
+                self.assertIsNotNone(last, f"{name} junk hid the real message")
+                self.assertEqual(last["type"], "blocked")
+
+    def test_undecodable_sibling_is_skipped(self):
+        box = bus.lead_inbox(self.root)
+        (box / "001.json").write_bytes(b"\xff\xfe\x00garbage")
+        self._plant_good_blocked_message()
+        self.assertEqual(ops.last_message_from(self.root, "grunt1")["type"], "blocked")
+
+    def test_message_missing_from_key_is_skipped_not_crashed(self):
+        box = bus.lead_inbox(self.root)
+        (box / "001.json").write_text('{"type": "note", "body": "no from key"}')
+        self._plant_good_blocked_message()
+        self.assertEqual(ops.last_message_from(self.root, "grunt1")["type"], "blocked")
+
+    def test_corrupt_staging_raises_state_error_not_json_error(self):
+        tid = ops.compose_task(self.root, "grunt1", "q", ["a.py"])
+        bus.staging_path(self.root, tid).write_text("")
+        with self.assertRaises(config.StateError):
+            ops.result_done(self.root, tid, "grunt1")
+
+    def test_staging_without_records_list_raises_state_error(self):
+        tid = ops.compose_task(self.root, "grunt1", "q", ["a.py"])
+        bus.staging_path(self.root, tid).write_text('{"task": "001", "records": 3}')
+        with self.assertRaises(config.StateError):
+            ops.result_done(self.root, tid, "grunt1")
+
+
+class SealedResultProvenanceTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / ".git").mkdir()
+        config.init(self.root)
+        (bus.team_dir(self.root) / "inbox" / "grunt1").mkdir(parents=True)
+
+    def test_sealed_result_records_the_producing_agent(self):
+        tid = ops.compose_task(self.root, "grunt1", "q", ["a.py"])
+        ops.result_add(self.root, tid, REC)
+        ops.result_done(self.root, tid, "grunt1")
+        sealed = bus.read_json(bus.result_path(self.root, tid))
+        self.assertEqual(sealed["agent"], "grunt1")
+        self.assertEqual(sealed["records"], [REC])
+
+    def test_reply_is_bound_to_the_task_and_message_it_answers(self):
+        tid = ops.compose_task(self.root, "grunt1", "q", ["a.py"])
+        mid = ops.post_message(self.root, "grunt1", "blocked", tid, "which file?")
+        rid = ops.reply(self.root, "grunt1", mid, "use a.py")
+        obj = bus.read_json(bus.task_path(self.root, "grunt1", rid))
+        self.assertEqual(obj["kind"], "reply")
+        self.assertEqual(obj["task"], tid)
+        self.assertEqual(obj["in_reply_to"], mid)
