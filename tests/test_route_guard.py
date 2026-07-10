@@ -5,6 +5,8 @@ payload, and returns a decision. The one thing it must never do is raise.
 """
 import importlib.util
 import json
+import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -189,6 +191,142 @@ class AmbiguityNudgesRatherThanBlocks(_Bus):
         _, _, ctx = self._decide("Grep", {"pattern": "hp", "path": "."})
         self.assertIn("grunt1", ctx)
         self.assertIn("grunt2", ctx)
+
+
+class StaleTasksLetGo(_Bus):
+    """A lead that crashed leaves an open task file forever. Without an age cap
+    its scope is denied in every future session in that repo -- a guard whose
+    failure mode is "this directory is permanently unreadable"."""
+
+    def _age(self, tid, seconds, agent="grunt1"):
+        f = bus.team_dir(self.root) / "inbox" / agent / f"{tid}.json"
+        old = f.stat().st_mtime - seconds
+        os.utime(f, (old, old))
+
+    def test_a_fresh_task_still_guards(self):
+        tid = self._task()
+        self._age(tid, guard.STALE_AFTER - 60)
+        d, _, _ = self._decide("Read", {"file_path": "src/A.cs"})
+        self.assertEqual(d, "deny")
+
+    def test_a_stale_task_stops_guarding(self):
+        tid = self._task()
+        self._age(tid, guard.STALE_AFTER + 60)
+        d, _, _ = self._decide("Read", {"file_path": "src/A.cs"})
+        self.assertEqual(d, "allow")
+
+    def test_a_stale_task_does_not_even_nudge(self):
+        tid = self._task()
+        self._age(tid, guard.STALE_AFTER + 60)
+        _, _, ctx = self._decide("Grep", {"pattern": "hp", "path": "."})
+        self.assertEqual(ctx, "")
+
+    def test_one_stale_task_does_not_lift_a_fresh_one(self):
+        stale = self._task(scope=["src"], agent="grunt1")
+        self._task(scope=["other"], agent="grunt2")
+        self._age(stale, guard.STALE_AFTER + 60, agent="grunt1")
+        self.assertEqual(self._decide("Read", {"file_path": "src/A.cs"})[0], "allow")
+        self.assertEqual(self._decide("Read", {"file_path": "other/B.cs"})[0], "deny")
+
+    def test_an_unreadable_mtime_is_stale(self):
+        """Let go, never hold."""
+        self.assertTrue(guard._stale(self.root / "no" / "such.json", 0.0))
+
+    def test_the_cap_exceeds_the_documented_wait(self):
+        """TEAMCHAT tells the lead `team wait --timeout 600`. A cap under that
+        would lift the guard mid-turn, on a grunt that is still reading."""
+        self.assertGreaterEqual(guard.STALE_AFTER, 6 * 600)
+
+
+class NeverExitsTwo(_Bus):
+    """A PreToolUse hook exiting 2 BLOCKS the tool call (measured). This script
+    is installed globally, so an exit 2 from it is a session-wide outage."""
+
+    def _run(self, payload: str, cwd=None):
+        script = Path(__file__).resolve().parent.parent / "hooks" / "team_route_guard.py"
+        return subprocess.run([sys.executable, str(script)], input=payload,
+                              capture_output=True, text=True, cwd=str(cwd or self.root))
+
+    def test_every_hostile_payload_exits_zero(self):
+        self._task()
+        payloads = [
+            "", "not json", "null", "[]", "3",
+            '{"tool_name": "Read"}',
+            '{"tool_name": "Read", "tool_input": null, "cwd": "/nonexistent"}',
+            '{"tool_name": "Read", "tool_input": {"file_path": "\\u0000"}, '
+            f'"cwd": "{self.root}"}}',
+            '{"tool_name": "Bash", "tool_input": {"command": 42}, '
+            f'"cwd": "{self.root}"}}',
+        ]
+        for payload in payloads:
+            proc = self._run(payload)
+            self.assertEqual(proc.returncode, 0, f"{payload!r} -> {proc.stderr}")
+            self.assertEqual(
+                json.loads(proc.stdout)["hookSpecificOutput"]["hookEventName"],
+                "PreToolUse", payload)
+
+    def test_an_unreadable_bus_exits_zero(self):
+        self._task()
+        inbox = bus.team_dir(self.root) / "inbox"
+        inbox.chmod(0o000)
+        self.addCleanup(inbox.chmod, 0o755)
+        proc = self._run(json.dumps({"tool_name": "Read",
+                                     "tool_input": {"file_path": "src/A.cs"},
+                                     "cwd": str(self.root)}))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["hookSpecificOutput"]
+                         ["permissionDecision"], "allow")
+
+
+class TheInstalledCommand(unittest.TestCase):
+    """The settings entry, not the script. `python3 <missing file>` exits 2 and
+    blocks every matched tool call, so the entry must be the guarded wrapper.
+
+    `SCRIPT` is `$0`, so the path is an argument and never a word of shell --
+    a path holding a quote or a space cannot become code.
+    """
+
+    SCRIPT = 'test -r "$0" || exit 0; exec python3 "$0"'
+
+    def command(self, path: str) -> str:
+        """Exactly the string that goes into settings.json."""
+        return f"sh -c {shlex.quote(self.SCRIPT)} {shlex.quote(path)}"
+
+    def _wrapper_rc(self, path):
+        return subprocess.run(["sh", "-c", self.SCRIPT, str(path)],
+                              input="", capture_output=True, text=True).returncode
+
+    def test_the_settings_string_parses_to_that_argv(self):
+        """The thing tested and the thing installed must be one thing."""
+        self.assertEqual(shlex.split(self.command("/a b/c'd.py")),
+                         ["sh", "-c", self.SCRIPT, "/a b/c'd.py"])
+
+    def test_a_missing_script_would_exit_two_unwrapped(self):
+        proc = subprocess.run([sys.executable, "/nonexistent/gone.py"],
+                              input="", capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 2)
+
+    def test_the_wrapper_turns_that_into_zero(self):
+        self.assertEqual(self._wrapper_rc("/nonexistent/gone.py"), 0)
+
+    def test_the_wrapper_still_runs_a_real_script(self):
+        real = Path(__file__).resolve().parent.parent / "hooks" / "team_route_guard.py"
+        self.assertEqual(self._wrapper_rc(str(real)), 0)
+
+    def test_the_wrapper_survives_an_unreadable_script(self):
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            p = Path(f.name)
+        self.addCleanup(p.unlink)
+        p.chmod(0o000)
+        self.assertEqual(self._wrapper_rc(str(p)), 0)
+
+    def test_a_syntax_error_is_non_blocking_not_exit_two(self):
+        """Mid-edit breakage in the repo must not block anyone's tool call."""
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+            f.write("def broken(\n")
+            p = Path(f.name)
+        self.addCleanup(p.unlink)
+        self.assertNotEqual(self._wrapper_rc(str(p)), 2)
 
 
 class NeverRaises(_Bus):

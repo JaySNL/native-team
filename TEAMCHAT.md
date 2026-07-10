@@ -128,8 +128,13 @@ A `PreToolUse` hook enforces this, if it is installed: while a task is in flight
 `--scope`. A repo-wide `Grep` is allowed with a nudge — the guard blocks reaching
 *into* the scope, not working elsewhere while a grunt reads.
 
-It lifts by itself the moment the task seals. `TEAM_ROUTE_GUARD=0` disables it.
-If it is not installed, nothing enforces this rule and it is on you.
+It lifts by itself the moment the task seals, and again one hour after the task
+was dispatched, so a lead that crashed cannot leave a directory unreadable.
+`TEAM_ROUTE_GUARD=0` disables it. If it is not installed, nothing enforces this
+rule and it is on you.
+
+`Bash` targets are its non-flag words, so a scope named `test/` will deny
+`npm test`. That is the rule working as written. Pick scopes that are paths.
 
 ---
 

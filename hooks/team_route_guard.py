@@ -19,14 +19,32 @@ stdin/stdout contract.
 
 FAILS OPEN. Any error, any surprise, and the tool call proceeds. A broken guard
 must never break a tool call. Disable with TEAM_ROUTE_GUARD=0.
+
+Two ways a guard installed globally can hurt a session that never heard of this
+tool, both measured, both closed here:
+
+- A PreToolUse hook exiting `2` BLOCKS the tool call. `python3 <missing file>`
+  exits 2. So the settings entry must not invoke this file directly -- see the
+  `sh -c 'test -r ...'` wrapper in the spec. This script itself only ever
+  exits 0.
+- A lead that crashes leaves a task file with no result and no dead marker, and
+  `open_scopes` would call it in flight forever: that scope becomes unreadable
+  in every future session in that repo. Hence STALE_AFTER.
 """
 import json
 import os
 import shlex
 import sys
+import time
 from pathlib import Path
 
 TEAM = ".team"
+
+# A task file's mtime is its dispatch time. The documented wait is
+# `--timeout 600`; a grunt turn is minutes. Past this age the task is not
+# in flight, it is wreckage -- a lead that died, or a tmux server that was
+# killed -- and the guard must not hold its scope hostage forever.
+STALE_AFTER = 3600.0
 SKIP_TOOLS = frozenset()          # every matched tool is considered
 PATH_TOOLS = {"Read": "file_path", "Grep": "path", "Glob": "path"}
 
@@ -62,12 +80,23 @@ def _obj(path: Path):
     return obj if isinstance(obj, dict) else None
 
 
-def open_scopes(root: Path) -> list[tuple[str, str, str]]:
+def _stale(task_file: Path, now: float) -> bool:
+    """Too old to be a running turn. Unreadable mtime counts as stale: the
+    guard's default must be to let go, never to hold."""
+    try:
+        return (now - task_file.stat().st_mtime) > STALE_AFTER
+    except OSError:
+        return True
+
+
+def open_scopes(root: Path, now: float | None = None) -> list[tuple[str, str, str]]:
     """(task_id, agent, scope_path) for every scope of every in-flight task.
 
-    In flight = a task file exists, and there is neither a sealed result nor a
-    dead marker for it. Build tasks carry an empty scope and so guard nothing.
+    In flight = a task file exists, is younger than STALE_AFTER, and has neither
+    a sealed result nor a dead marker. Build tasks carry an empty scope and so
+    guard nothing.
     """
+    now = time.time() if now is None else now
     team = root / TEAM
     out: list[tuple[str, str, str]] = []
     inbox = team / "inbox"
@@ -81,6 +110,8 @@ def open_scopes(root: Path) -> list[tuple[str, str, str]]:
             if (team / "results" / f"{tid}.json").exists():
                 continue
             if (team / "dead" / tid).exists() or (team / "dead" / f"{tid}.json").exists():
+                continue
+            if _stale(task_file, now):
                 continue
             task = _obj(task_file)
             if not task:

@@ -1,6 +1,6 @@
 # Route guard — design
 
-**Status:** implemented; verified live. Not yet installed.
+**Status:** implemented; verified live; installed globally.
 
 **Goal:** make "do not do the work yourself" enforced instead of merely written
 down.
@@ -60,6 +60,7 @@ bus already knows.
 | `TEAM_ROUTE_GUARD=0` | allow, silent |
 | no bus in any ancestor of `cwd` | allow, silent |
 | no open task | allow, silent |
+| task file older than `STALE_AFTER` (1 h) | allow, silent |
 | `Read` / `Grep` / `Glob` whose target is **inside or equal to** a scope path | **deny** |
 | `Bash` with any argument resolving inside a scope path | **deny** |
 | `Bash` whose first word is `team` | allow, silent |
@@ -195,21 +196,99 @@ Full matrix, live, against a real bus:
 The guard lifts the instant the task seals, with no cleanup: `results/<tid>.json`
 appearing is the whole mechanism.
 
-## Installing it
+---
 
-Not installed by this commit. It belongs in `~/.claude/settings.json`, which is
-the user's global config across every project, so it is their call:
+## Not footgunning a session that never heard of this tool
+
+The guard is registered in `~/.claude/settings.json`, so it runs in *every*
+project. The interesting failure modes are not in `decide()` at all. Both were
+found by asking "how does this hurt someone doing unrelated work", and both are
+measured.
+
+### 1. A hook that exits `2` blocks the tool call
+
+```
+$ python3 /nonexistent/gone.py ; echo $?
+2
+$ python3 syntax_error.py ; echo $?
+1
+```
+
+Exit `2` is Claude Code's *blocking* error. Exit `1` is not. So the obvious
+settings entry —
+
+```
+python3 /home/user/Projects/native-team/hooks/team_route_guard.py
+```
+
+— means that moving or deleting `native-team`, a repo under active development,
+silently kills `Read`, `Grep`, `Glob` and `Bash` in every project. Verified with
+a headless `claude -p` against a hook pointing at a missing file:
+
+> Read tool blocked by PreToolUse hook. Hook itself broken — points at script
+> that not exist. `[Errno 2] No such file or directory`
+
+The installed command is therefore wrapped so that a missing or unreadable
+script is a silent no-op:
 
 ```json
 {
   "matcher": "Read|Grep|Glob|Bash",
   "hooks": [{"type": "command",
-             "command": "python3 /home/user/Projects/native-team/hooks/team_route_guard.py",
+             "command": "sh -c 'test -r \"$0\" || exit 0; exec python3 \"$0\"' /home/user/Projects/native-team/hooks/team_route_guard.py",
              "timeout": 5,
              "statusMessage": "team-route-guard"}]
 }
 ```
 
-Added as a second entry in the existing `PreToolUse` array. In any directory
-without a `.team/` bus holding an open task it costs one `stat` and returns
-`allow`.
+`$0` carries the path, so a path containing a space or a quote is an argument
+and never a word of shell. `test -r` fails → `exit 0` → allow. A syntax error
+mid-edit → python exits `1` → non-blocking. The only route to `2` is gone. The
+script itself exits `0` on every input, hostile ones included.
+
+Pointing at the repo rather than copying into `~/.claude/hooks/` is deliberate:
+the guard should track the tool it enforces. The wrapper is what makes that
+safe.
+
+### 2. A crashed lead must not lock a directory forever
+
+`open_scopes` calls a task in flight until a result or a dead marker appears. If
+the lead dies — or the tmux server is killed — neither ever appears, and that
+scope is denied in every future session in that repo. The escape hatch is
+printed in the deny message, but a guard whose failure mode is *"this directory
+is permanently unreadable, and the reason scrolled past a week ago"* is precisely
+the footgun.
+
+So a task file's mtime is its dispatch time, and past `STALE_AFTER = 3600 s` it
+is not in flight, it is wreckage. The cap is 6× the `--timeout 600` that
+`TEAMCHAT.md` documents, so it cannot lift mid-turn on a grunt that is still
+reading. An unreadable mtime counts as stale: **let go, never hold**.
+
+### Accepted, not fixed
+
+`Bash`'s targets are its non-flag words, so with a task scoped to `test/`, the
+command `npm test` is denied — `test` resolves to the scope. It is a false
+positive in spirit and a true one by the rule. It costs one `TEAM_ROUTE_GUARD=0`
+and only bites the lead who chose that scope.
+
+## Installed
+
+```
+$ python3 -c "import json;d=json.load(open('~/.claude/settings.json'))..."
+  Bash|Read           -> route-guard
+  Read|Grep|Glob|Bash -> team-route-guard
+```
+
+Backup at `~/.claude/settings.json.bak-preteamguard`; the diff adds one entry
+and touches nothing else. Live, against the global install only:
+
+| probe | cwd | result |
+|---|---|---|
+| `Read src/A.cs`, fresh task scoped `src/` | scratch repo | **blocked**, never saw the file |
+| same, task mtime aged 2 h | scratch repo | allowed |
+| `Read A.cs` | plain dir, no bus | allowed |
+| `Read A.cs`, **hook file deleted** | plain dir | allowed |
+| `Read src/A.cs`, hook file deleted, fresh task | scratch repo | allowed (fails open) |
+
+In any directory without a `.team/` bus holding an open task it costs one `stat`
+and returns `allow`.
