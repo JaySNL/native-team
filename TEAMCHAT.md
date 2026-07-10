@@ -46,11 +46,42 @@ Clears the grunt's context, writes the task file, sends it. Prints
 Ask for one thing. Name the file or directory in `--scope`. A grunt told "do not
 wander" still wanders — scope is advice, not a fence.
 
+### Three kinds of task
+
+This is a delegation bus; code lookup is one mode on it, not the whole tool.
+
+- `--type find` (default) — cite `file:line`. `verify` re-opens each file. This
+  is the mode the whole "a citation is not a fact until verified" rule is about.
+- `--type build` — write code in a worktree. `verify` checks the grunt changed
+  only what it declared, and checks its citations against that worktree.
+- `--type ask` — a question with **no source**: "ELI5 E=mc²", "draft a changelog
+  line". The grunt answers from its own knowledge. It takes **no `--scope`** —
+  naming a file is a claim about that file, which is a `find` task. The answer
+  seals as prose and `team wait` hands it straight back to you. You render it;
+  you do not re-derive it. Nothing verifies, because there is no claim about the
+  code to check — `verify` says `NOTHING TO VERIFY`, not `PASS`.
+
+Do not route a code question through `ask` to dodge the verifier. If the answer
+lives in a file, it is a `find` task, and the grep is the grunt's job, not yours.
+
 ### `team wait [--task NNN ...] [--for lead] [--timeout SECS]`
 
 Blocks. `--task` repeats: `--task 007 --task 009` waits on both.
 
-Prints `SEALED: 007`, `SUPERSEDED: 007`, or `TIMEOUT: 007`.
+Prints `SEALED: 007`, `SUPERSEDED: 007`, `TIMEOUT: 007`, or `BLOCKED: 007 ...`.
+
+**A blocked grunt lifts the wait immediately — it does not run to timeout.** A
+grunt that hits `team msg --blocked` is idle at its prompt, waiting for you.
+`wait` returns at once with exit `5` and prints the exact reply command:
+
+```
+BLOCKED: 007 (blocked 008) nothing in scope cites this
+  team send grunt1 --reply 008 "<your answer>"
+```
+
+Answer it (`--reply`), supersede it with a corrected task, or `grunt rm` it. A
+sealed ask task prints its answer under `ANSWER 007:` — that is the grunt's work,
+already done; render it unless it is wrong or the task needs a follow-up.
 
 ### `team verify <tid> [--show] [--lenient]`
 
@@ -90,6 +121,7 @@ team send <agent> --supersede --question "..."   # cancel its current turn, reta
 | `2` | the grunt's pane is gone |
 | `3` | refused: bad state, no bus, a guard fired |
 | `4` | timeout |
+| `5` | a grunt is blocked, waiting for you to `--reply` |
 
 ### Three traps that will bite you
 

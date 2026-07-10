@@ -49,6 +49,33 @@ You are reading a checkout of the last commit, not anyone's edits since.
 """
 
 
+ASK_TEMPLATE = """\
+You are a grunt on a team. This task is a QUESTION, not a code lookup.
+
+TASK {tid}
+QUESTION:
+{question}
+
+Answer it from what you know. There is no scope, and nothing here is a claim
+about any codebase: do NOT search the repo, do NOT open files, do NOT cite.
+If the question cannot be answered without reading code, it was sent to you as
+the wrong kind of task -- say so and stop:
+
+    team msg --blocked --task {tid} "this needs code; re-send as --type find"
+
+HOW TO REPORT -- write the answer to a file, then hand over the file.
+Your answer is prose. Prose does not survive being typed into a shell as an
+argument: a quote or a newline will silently truncate it.
+
+    1. Write your full answer to ANSWER.md in the current directory.
+    2. team result answer --task {tid} --from ANSWER.md
+    3. team result done --task {tid}
+
+ANSWER.md is a new file in your own worktree. Creating it is allowed; that is
+what it is for. Do not modify any file that was already there.
+"""
+
+
 BUILD_TEMPLATE = """\
 You are a grunt on a code-writing team. Work ONLY inside your worktree.
 
@@ -97,6 +124,10 @@ else fails the task.
 def task_body(tid: str, question: str, scope: list[str]) -> str:
     scope_text = "\n".join(f"  - {s}" for s in scope) or "  (none given)"
     return TEMPLATE.format(tid=tid, question=question.strip(), scope=scope_text)
+
+
+def ask_body(tid: str, question: str) -> str:
+    return ASK_TEMPLATE.format(tid=tid, question=question.strip())
 
 
 def build_body(tid: str, question: str, workdir: str, create: list[str],

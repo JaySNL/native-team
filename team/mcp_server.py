@@ -57,8 +57,10 @@ TOOLS = [
                                 "description": "dispatch even though a scope path "
                                                "is uncommitted; the grunt reads "
                                                "the committed version"},
-                "kind": {"type": "string", "enum": ["find", "build"],
-                         "description": "default find"},
+                "kind": {"type": "string", "enum": ["find", "build", "ask"],
+                         "description": "find (cite code, default), build "
+                                        "(write code), or ask (answer a question "
+                                        "from your own knowledge, no scope)"},
                 "create": {"type": "array", "items": {"type": "string"},
                            "description": "build: files the grunt may create"},
                 "build_dir": {"type": "string"},
@@ -113,15 +115,32 @@ def _send(result: api.SendResult) -> tuple[str, dict]:
 
 
 def _wait(result: api.WaitResult) -> tuple[str, dict]:
-    lines = ([f"SEALED: {t}" for t in result.sealed] +
-             [f"SUPERSEDED: {t}" for t in result.superseded] +
-             [f"TIMEOUT: {t}" for t in result.timed_out])
+    lines = [f"SEALED: {t}" for t in result.sealed]
+    # The answer travels back in the result. This is the "Claude only renders
+    # it" path: an ask task's prose reaches the lead here, so it does not call
+    # `team answer` and does not re-read anything. A find task's records are
+    # deliberately NOT carried -- keeping the decompile out of context is why.
+    for tid, text in result.answers.items():
+        lines.append(f"\nANSWER {tid}:\n{text}")
+    lines += [f"SUPERSEDED: {t}" for t in result.superseded]
+    for m in result.blocked:
+        lines.append(f"BLOCKED: {m['task']} ({m['type']} {m['id']}) {m['body']}")
+        lines.append(f"  reply with team_send agent={m['from']} reply={m['id']}")
+    lines += [f"TIMEOUT: {t}" for t in result.timed_out]
     return ("\n".join(lines) or "nothing to wait for",
             {"sealed": result.sealed, "superseded": result.superseded,
-             "timed_out": result.timed_out, "ok": result.ok})
+             "timed_out": result.timed_out, "blocked": result.blocked,
+             "answers": result.answers, "ok": result.ok})
 
 
 def _verify(result: api.VerifyResult) -> tuple[str, dict]:
+    if result.kind == "ask":
+        # No claim about the code, so nothing to verify and no PASS to give.
+        # The answer itself rode back on team_wait; here we only say so.
+        return (f"ask {result.task}: nothing to verify (0 citations). An ask "
+                f"answer is prose, not a claim about the code.",
+                {"task": result.task, "kind": "ask", "ok": True,
+                 "verifiable": False, "citations": [], "build": None})
     parts = []
     if result.build is not None:
         parts.append(buildverify.render(result.build))
@@ -131,6 +150,7 @@ def _verify(result: api.VerifyResult) -> tuple[str, dict]:
         parts.insert(0, FAIL_BANNER)
     return ("\n".join(parts),
             {"task": result.task, "kind": result.kind, "ok": result.ok,
+             "verifiable": True,
              "citations": [_verdict_dict(v) for v in result.verdicts],
              "build": None if result.build is None else
                       {"status": result.build.status,

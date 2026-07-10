@@ -52,18 +52,20 @@ class WaitTest(unittest.TestCase):
         ops.result_add(self.root, tid, {"file": "a.py", "line": 1,
                                         "symbol": "x", "evidence": "x = 1"})
         clock = FakeClock(on_tick=lambda: ops.result_done(self.root, tid, "grunt1"))
-        sealed, missing = wait.for_tasks(self.root, [tid, "999"], timeout=2.0,
-                                         now=clock.now, sleep=clock.sleep)
+        sealed, missing, blocked = wait.for_tasks(self.root, [tid, "999"],
+                                                  timeout=2.0, now=clock.now,
+                                                  sleep=clock.sleep)
         self.assertEqual(sealed, [tid])
         self.assertEqual(missing, ["999"])
+        self.assertEqual(blocked, [])
 
     def test_for_tasks_treats_dead_task_as_resolved(self):
         tid = ops.compose_task(self.root, "grunt1", "q", [])
         bus.mark_dead(self.root, tid)
         clock = FakeClock()
-        sealed, missing = wait.for_tasks(self.root, [tid], timeout=1.0,
-                                         now=clock.now, sleep=clock.sleep)
-        self.assertEqual((sealed, missing), ([], []))
+        sealed, missing, blocked = wait.for_tasks(self.root, [tid], timeout=1.0,
+                                                  now=clock.now, sleep=clock.sleep)
+        self.assertEqual((sealed, missing, blocked), ([], [], []))
 
 
 if __name__ == "__main__":

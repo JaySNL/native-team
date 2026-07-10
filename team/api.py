@@ -43,25 +43,53 @@ class WaitResult:
     sealed: list[str] = field(default_factory=list)
     superseded: list[str] = field(default_factory=list)
     timed_out: list[str] = field(default_factory=list)
+    blocked: list[dict] = field(default_factory=list)
+    # Prose from sealed ask tasks, keyed by task id. The lead renders this; it
+    # does not go and read anything. A find task's records are NOT carried
+    # here -- keeping the decompile out of the lead's context is the point.
+    answers: dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
-        """A superseded task is resolved, not lost. Only a timeout is a miss."""
-        return not self.timed_out
+        """A superseded task is resolved, not lost. A blocked one is not: it is
+        idle, waiting for the lead. Only a timeout and a block are misses."""
+        return not self.timed_out and not self.blocked
 
 
 @dataclass
 class VerifyResult:
     task: str
-    kind: str                                  # "find" | "build"
+    kind: str                                  # "find" | "build" | "ask"
     verdicts: list[verify.Verdict]
     build: buildverify.TaskVerdict | None = None
+    answer: str | None = None
+
+    @property
+    def verifiable(self) -> bool:
+        """An ask task carries no claim about any file. Nothing to re-open."""
+        return self.kind != "ask"
 
     @property
     def ok(self) -> bool:
-        if self.build is not None and self.build.failed:
+        if self.kind == "ask":
+            return True                        # nothing failed; nothing passed
+        if self.build is not None:
+            return not self.build.failed and not verify.any_failed(self.verdicts)
+        # Fail closed on an empty find. `any_failed([])` is False, so without
+        # this a zero-citation seal would report a vacuous PASS -- and once ask
+        # tasks can seal with no records, `result_done` is no longer the only
+        # thing standing between a lead and a green light on nothing.
+        if not self.verdicts:
             return False
         return not verify.any_failed(self.verdicts)
+
+
+def answer(root: Path, task: str) -> str | None:
+    """The prose a sealed ask task carries, or None."""
+    path = bus.result_path(root, task)
+    if not path.exists():
+        return None
+    return bus.read_json(path).get("answer")
 
 
 def send(root: Path, agent: str, *, question: str = "", scope=(),
@@ -74,6 +102,16 @@ def send(root: Path, agent: str, *, question: str = "", scope=(),
     Raises `panes.PaneError` if the grunt's pane is gone. The caller decides
     what that means: the CLI exits `PANE_GONE`, the MCP server returns isError.
     """
+    # Reject a malformed request before any pane side effect. An ask task with a
+    # scope is a category error (a claim about a file is a find task), not a
+    # thing to compose and dispatch.
+    if kind == "ask" and scope:
+        raise StateError(
+            "an ask task takes no --scope. Naming a file is a claim about "
+            "that file, and a claim is checkable: send it as --type find, "
+            "where `verify` re-opens the file."
+        )
+
     p = p if p is not None else panes.Panes()
     pane = pane_for(root, agent)
     if not p.exists(pane):
@@ -87,7 +125,9 @@ def send(root: Path, agent: str, *, question: str = "", scope=(),
         p.send_line(pane, f"do task {bus.task_path(root, agent, rid)}")
         return SendResult("reply", rid, agent)
 
-    if kind == "build":
+    if kind == "ask":
+        tid = ops.compose_ask_task(root, agent, question, supersede=supersede)
+    elif kind == "build":
         tid = ops.compose_build_task(
             root, agent, question, list(create), build_dir,
             list(build_cmd) if build_cmd else list(DEFAULT_BUILD_CMD),
@@ -107,12 +147,15 @@ def send(root: Path, agent: str, *, question: str = "", scope=(),
 
 def wait_tasks(root: Path, tasks: list[str],
                timeout: float = DEFAULT_WAIT_TIMEOUT) -> WaitResult:
-    sealed, missing = wait.for_tasks(root, tasks, timeout=timeout)
+    sealed, missing, blocked = wait.for_tasks(root, tasks, timeout=timeout)
+    stuck = {m["task"] for m in blocked}
     # A superseded task is resolved but never seals. Reporting it as neither
     # sealed nor timed out left `team wait` printing nothing and exiting 0.
-    superseded = [t for t in tasks if t not in sealed and t not in missing]
+    superseded = [t for t in tasks
+                  if t not in sealed and t not in missing and t not in stuck]
+    answers = {t: a for t in sealed if (a := answer(root, t))}
     return WaitResult(sealed=list(sealed), superseded=superseded,
-                      timed_out=list(missing))
+                      timed_out=list(missing), blocked=blocked, answers=answers)
 
 
 def verify_task(root: Path, task: str) -> VerifyResult:
@@ -128,8 +171,10 @@ def verify_task(root: Path, task: str) -> VerifyResult:
     """
     if not buildverify.is_build_task(root, task):
         payload = bus.read_json(bus.result_path(root, task))
+        if payload.get("kind") == "ask" or payload.get("answer") is not None:
+            return VerifyResult(task, "ask", [], answer=payload.get("answer"))
         return VerifyResult(task, "find",
-                            verify.verify_records(root, payload["records"]))
+                            verify.verify_records(root, payload.get("records") or []))
 
     tv = buildverify.verify_build(root, task)
     verdicts: list[verify.Verdict] = []

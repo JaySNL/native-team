@@ -99,6 +99,39 @@ def compose_task(root: Path, agent: str, question: str,
     return tid
 
 
+def compose_ask_task(root: Path, agent: str, question: str,
+                     supersede: bool = False) -> str:
+    """A question with no source. The grunt answers from its own weights.
+
+    An ask task takes NO scope, and that is a fence rather than an omission.
+    Naming a file is making a claim about that file, and a claim about a file
+    is checkable -- so it belongs in a `find` task, where `verify` re-opens the
+    file and checks it. Without this fence, `--type ask` becomes the way to
+    launder an unverifiable answer about the codebase past the verifier, which
+    is exactly what `--lenient` was refused for.
+    """
+    open_tid = bus.open_task(root, agent)
+    if open_tid and not supersede:
+        raise StateError(
+            f"{agent} already has open task {open_tid}. "
+            f"Pass --supersede to kill it, or wait for its result."
+        )
+    if open_tid:
+        bus.mark_dead(root, open_tid)
+
+    tid = bus.alloc_id(root)
+    bus.write_json(bus.task_path(root, agent, tid), {
+        "id": tid,
+        "kind": "ask",
+        "to": agent,
+        "from": "lead",
+        "question": question,
+        "scope": [],
+        "protocol": protocol.ask_body(tid, question),
+    })
+    return tid
+
+
 def reply(root: Path, agent: str, msg_id: str, text: str) -> str:
     """Send a follow-up to `agent`, only when it is idle at its prompt.
 
@@ -157,6 +190,33 @@ def result_add(root: Path, tid: str, rec: dict) -> None:
     bus.write_json(path, {"task": tid, "records": records})
 
 
+def result_answer(root: Path, tid: str, text: str) -> None:
+    """Stage an ask task's prose answer.
+
+    Takes text already read from a file, never an argv string: a grunt types
+    its commands into a shell inside a TUI, and a multi-paragraph answer
+    carrying a quote or a newline would be truncated at the first one --
+    silently, which is the failure mode this project exists to refuse.
+    """
+    if not text.strip():
+        raise StateError(f"task {tid}: the answer is empty; nothing to stage")
+    if bus.result_path(root, tid).exists():
+        raise StateError(f"task {tid} is already sealed; it takes no more answers")
+    path = bus.staging_path(root, tid)
+    staged = _read_staging(path) if path.exists() else {"task": tid, "records": []}
+    staged["answer"] = text
+    bus.write_json(path, staged)
+
+
+def task_kind(root: Path, agent: str, tid: str) -> str:
+    """`find` | `build` | `ask`, read from the task file the lead wrote."""
+    path = bus.task_path(root, agent, tid)
+    if not path.is_file():
+        return "find"          # hand-driven bus, or a reply; assume citations
+    kind = bus.read_json(path).get("kind")
+    return {"ask": "ask", "build": "build"}.get(kind, "find")
+
+
 def result_done(root: Path, tid: str, agent: str) -> str:
     """Seal staged records into `results/`, then announce -- never the other
     way around. A lead woken by the announcement message must always find
@@ -169,16 +229,43 @@ def result_done(root: Path, tid: str, agent: str) -> str:
     if bus.result_path(root, tid).exists():
         raise StateError(f"task {tid} is already sealed; results are write-once")
 
+    kind = task_kind(root, agent, tid)
     staging = bus.staging_path(root, tid)
     if not staging.exists():
-        raise StateError(f"task {tid} has no staged records; nothing to seal")
+        raise StateError(_nothing_to_seal(tid, kind))
 
     payload = _read_staging(staging)
+    answer = payload.get("answer")
+    records = payload.get("records") or []
+
+    # The two kinds seal on different evidence, and neither accepts the
+    # other's. Letting an ask task seal citations, or a find task seal prose,
+    # would make `verify` answer a question it was never asked.
+    if kind == "ask":
+        if records:
+            raise StateError(
+                f"task {tid} is an ask task: it seals an answer, not citations. "
+                f"A claim about a file belongs in a find task, where `verify` "
+                f"re-opens the file and checks it."
+            )
+        if not answer:
+            raise StateError(_nothing_to_seal(tid, kind))
+    else:
+        if answer:
+            raise StateError(
+                f"task {tid} is a {kind} task: prose is not a report. Cite it "
+                f"with `team result add`, or post it with "
+                f"`team msg --note --task {tid} \"...\"`."
+            )
+        if not records:
+            raise StateError(_nothing_to_seal(tid, kind))
+
     # Re-validate even though result_add already validated each record on the
     # way in: a staging file can also be written by hand, bypassing
     # result_add entirely. Never seal a record this module hasn't checked.
-    for rec in payload["records"]:
+    for rec in records:
         schema.validate_record(rec)
+    payload["kind"] = kind
     payload["agent"] = agent
 
     # Seal before announce: the lead must never wake to a result that
@@ -186,9 +273,29 @@ def result_done(root: Path, tid: str, agent: str) -> str:
     bus.write_json(bus.result_path(root, tid), payload)
     staging.unlink()
 
-    count = len(payload["records"])
+    if kind == "ask":
+        return post_message(root, agent, "result", tid,
+                            f"answer sealed; read it with `team answer {tid}`")
     return post_message(root, agent, "result", tid,
-                        f"{count} record(s) sealed; run `team verify {tid}`")
+                        f"{len(records)} record(s) sealed; run `team verify {tid}`")
+
+
+def _nothing_to_seal(tid: str, kind: str) -> str:
+    """The reader of this message is a 30B model with one shot at recovering.
+
+    Measured: told only "no staged records; nothing to seal", a grunt with
+    nothing to cite searched the whole repo for its subject, three times, then
+    blocked. It never learned what the exits were, because nothing named them.
+    """
+    if kind == "ask":
+        return (f"task {tid} has no staged answer; nothing to seal. Write your "
+                f"answer to ANSWER.md, then: "
+                f"team result answer --task {tid} --from ANSWER.md")
+    return (f"task {tid} has no staged records; nothing to seal. Add a citation "
+            f"with `team result add --task {tid} --file <path> --line <n> "
+            f"--symbol <name> --evidence '<the exact source line>'`. If the "
+            f"answer is not in your scope, do NOT go looking elsewhere: "
+            f"team msg --blocked --task {tid} \"why you cannot proceed\"")
 
 
 def _porcelain(root: Path, agent: str, wt) -> list[str]:

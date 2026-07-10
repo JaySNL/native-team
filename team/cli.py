@@ -15,7 +15,7 @@ from team import (api, bus, buildverify, collect, config, log, ops, panes,
 from team.config import StateError
 from team.schema import SchemaError
 
-OK, VERIFY_FAIL, PANE_GONE, REFUSED, TIMEOUT = 0, 1, 2, 3, 4
+OK, VERIFY_FAIL, PANE_GONE, REFUSED, TIMEOUT, BLOCKED = 0, 1, 2, 3, 4, 5
 
 # `init` runs before a bus exists and `down` destroys one, so both locate the
 # repo by `.git`. Every other verb addresses an existing bus and must find it by
@@ -369,8 +369,16 @@ def cmd_wait(args, root):
         print(f"SEALED: {tid}")
     for tid in r.superseded:
         print(f"SUPERSEDED: {tid}")
+    for msg in r.blocked:
+        # The reply command, spelled out. A lead that has to derive it will
+        # instead go and do the work itself, which is the one thing this tool
+        # exists to stop.
+        print(f"BLOCKED: {msg['task']} ({msg['type']} {msg['id']}) {msg['body']}")
+        print(f"  team send {msg['from']} --reply {msg['id']} \"<your answer>\"")
     for tid in r.timed_out:
         print(f"TIMEOUT: {tid}")
+    if r.blocked:
+        return BLOCKED
     return OK if r.ok else TIMEOUT
 
 
@@ -416,8 +424,25 @@ def cmd_result(args, root):
         })
         print(f"staged record for {args.task}")
         return OK
+    if args.result_cmd == "answer":
+        # Read from a file, never an argv string: a grunt types this into a
+        # shell, and a quote or newline in the prose would truncate it silently.
+        text = Path(args.from_file).read_text(encoding="utf-8")
+        ops.result_answer(root, args.task, text)
+        print(f"staged answer for {args.task} ({len(text)} chars)")
+        return OK
     mid = ops.result_done(root, args.task, args.agent)
     print(f"sealed {args.task}, announced as {mid}")
+    return OK
+
+
+def cmd_answer(args, root):
+    text = api.answer(root, args.task)
+    if text is None:
+        print(f"task {args.task} has no sealed answer "
+              f"(not an ask task, or not sealed yet)", file=sys.stderr)
+        return REFUSED
+    print(text)
     return OK
 
 
@@ -428,7 +453,14 @@ def _records(root: Path, tid: str) -> list[dict]:
 
 def cmd_verify(args, root):
     r = api.verify_task(root, args.task)
-    if r.kind == "build":
+    if r.kind == "ask":
+        # `PASS` is reserved for a citation that survived re-reading the file.
+        # An ask task carries no claim about any file, so there is nothing to
+        # pass -- and saying PASS would teach the lead that prose was checked.
+        print(f"ask {args.task}: NOTHING TO VERIFY — 0 citations. "
+              f"An ask answer is not a claim about the code; read it with "
+              f"`team answer {args.task}`.")
+    elif r.kind == "build":
         print(buildverify.render(r.build))
         # No citations, or a task-level failure that left no sound tree to
         # resolve them against: `api.verify_task` returns [] for both.
@@ -509,7 +541,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="find: dispatch even though a --scope path is "
                         "uncommitted; the grunt reads the committed version")
     p.add_argument("--reply", metavar="MSG_ID")
-    p.add_argument("--type", choices=["find", "build"], default="find")
+    p.add_argument("--type", choices=["find", "build", "ask"], default="find",
+                   help="ask: a question with no source; the grunt answers from "
+                        "its own knowledge and takes no --scope")
     p.add_argument("--create", action="extend", nargs="+", default=[],
                    metavar="PATH", help="build: files the grunt may create")
     p.add_argument("--replace", action="store_true",
@@ -557,10 +591,18 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--line", type=int, required=True)
     a.add_argument("--symbol", required=True)
     a.add_argument("--evidence", required=True)
+    ans = rsub.add_parser("answer", help="ask: stage a prose answer from a file")
+    ans.add_argument("--task", required=True)
+    ans.add_argument("--from", dest="from_file", required=True, metavar="FILE",
+                     help="a file holding the answer; never an argv string")
     d = rsub.add_parser("done")
     d.add_argument("--task", required=True)
     d.add_argument("--agent", default="grunt1")
     p.set_defaults(fn=cmd_result)
+
+    p = sub.add_parser("answer", help="print a sealed ask task's answer")
+    p.add_argument("task")
+    p.set_defaults(fn=cmd_answer)
 
     p = sub.add_parser("verify")
     p.add_argument("task")
