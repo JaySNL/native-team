@@ -1,3 +1,11 @@
 #!/usr/bin/env bash
 # `team` — file-based bus for the native multi-terminal agent team.
-exec python3 -m team "$@"
+#
+# `team` is meant to be run from inside whatever repo it manages (a target
+# project's working tree), not from this repo -- so `python3 -m team` cannot
+# rely on cwd to find the `team` package. Resolve this script's own real
+# location (it is normally reached via a symlink on PATH, e.g.
+# ~/.local/bin/team -> .../bin/team) and put that repo root on PYTHONPATH
+# regardless of where the caller cd'd.
+here="$(cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)"
+exec env PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" python3 -m team "$@"
