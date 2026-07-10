@@ -19,12 +19,9 @@ def validate_record(rec: dict) -> None:
         raise SchemaError(f"line must be a positive int, got {line!r}")
 
     # Type-check all string fields
-    if not isinstance(rec["file"], str):
-        raise SchemaError(f"file must be a string, got {type(rec['file']).__name__}")
-    if not isinstance(rec["symbol"], str):
-        raise SchemaError(f"symbol must be a string, got {type(rec['symbol']).__name__}")
-    if not isinstance(rec["evidence"], str):
-        raise SchemaError(f"evidence must be a string, got {type(rec['evidence']).__name__}")
+    for field_name in ("file", "symbol", "evidence"):
+        if not isinstance(rec[field_name], str):
+            raise SchemaError(f"{field_name} must be a string, got {type(rec[field_name]).__name__}")
 
     # Validate symbol is not empty after stripping
     if not rec["symbol"].strip():
@@ -46,6 +43,8 @@ def validate_message(msg: dict) -> None:
     for key in MESSAGE_FIELDS:
         if key not in msg:
             raise SchemaError(f"message missing field: {key}")
+    if not isinstance(msg["type"], str):
+        raise SchemaError(f"type must be a string, got {type(msg['type']).__name__}")
     if msg["type"] not in MESSAGE_TYPES:
         raise SchemaError(
             f"unknown message type {msg['type']!r}; expected one of {sorted(MESSAGE_TYPES)}"

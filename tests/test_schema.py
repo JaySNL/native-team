@@ -126,6 +126,32 @@ class MessageTest(unittest.TestCase):
         with self.assertRaises(schema.SchemaError):
             schema.validate_message(msg)
 
+    def test_type_list_rejected(self):
+        """type as a list should raise SchemaError, not TypeError."""
+        with self.assertRaises(schema.SchemaError):
+            schema.validate_message(self.msg(type=["blocked"]))
+
+    def test_type_dict_rejected(self):
+        """type as a dict should raise SchemaError, not TypeError."""
+        with self.assertRaises(schema.SchemaError):
+            schema.validate_message(self.msg(type={"blocked": 1}))
+
+    def test_type_int_rejected(self):
+        """type as an int should raise SchemaError."""
+        with self.assertRaises(schema.SchemaError):
+            schema.validate_message(self.msg(type=123))
+
+
+class RegressionTest(unittest.TestCase):
+    """Regression guards: ensure whitespace-only symbol is caught."""
+
+    def test_symbol_whitespace_only_rejected(self):
+        """symbol with only whitespace should raise SchemaError."""
+        good = {"file": "src/A.cs", "line": 36, "symbol": "   ",
+                "evidence": "    public bool TryHeal(Character c)"}
+        with self.assertRaises(schema.SchemaError):
+            schema.validate_record(good)
+
 
 if __name__ == "__main__":
     unittest.main()
