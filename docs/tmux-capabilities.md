@@ -56,6 +56,46 @@ tmux wait-for chan1         # -> blocks                (latch was one-shot)
 
 Polling costs nothing: turns take tens of seconds; the loop sleeps 250 ms.
 
+## tmux MCP servers — real, and rejected
+
+Asked 2026-07-10: "an MCP exists, aren't we making this hard?" Three were checked.
+
+- **`nickgnd/tmux-mcp`** (TypeScript): `execute-command` + `get-command-result`, needs `--shell-type` to
+  read exit status. Shell-shaped; no raw keystrokes. Our panes run qwen's Ink TUI — no shell prompt,
+  no exit code. Does not fit.
+- **`tmux-mcp-rs`** (Rust): genuinely capable. 50+ tools, `send-keys` with `literal`, `send-escape`,
+  `send-cancel`, `capture-pane`, START/DONE marker tracking with real exit codes, allowlist policy on
+  `execute-command`. Well built.
+- `bnomei/tmux-mcp`: could not be verified; the URL served `tmux-mcp-rs` content.
+
+**Rejected**, on scope rather than quality:
+
+1. **It solves a problem we do not have.** Of eleven phase-1 modules, two touch tmux (`panes.py`,
+   `bin/team-up`), and `panes.py` is ~80 lines of `subprocess.run(["tmux", ...])`. The nine papercuts
+   in `HANDOFF.md` are grunts that cannot report back (#3), grunt output that is untrustworthy (#7),
+   scarce lead context (#8), opaque delivery (#4), a board that never updates (#5). No tmux MCP
+   touches any of them. The lead has never once struggled to drive tmux.
+2. **It works against papercut #8.** 50+ tool schemas enter the lead's context on every turn. The
+   papercut *is* the lead's context reaching 193k. `tmux send-keys` over Bash costs zero schema.
+3. **It re-opens papercut #2.** That papercut was an MCP naming surface: qwen resolved
+   `mcp__aionui-team__team_send_message` but not `team_send_message`, and concluded it had no team
+   tools at all. A CLI on `$PATH` has no naming surface to get wrong.
+4. **It is a resident third-party binary with write access to every pane** in the tmux server,
+   including the lead's. That is the daemon the file bus exists to avoid.
+
+Its best feature — marker-based `execute-command` tracking — is inert here: markers need a shell to
+echo them. We would use `send-keys`, `send-escape`, `capture-pane`: three tools of fifty, each a
+one-line subprocess call today. And we would lose what `panes.py` is *for* — that Escape must precede
+every line (dismissing the command palette, *and* cancelling an in-flight turn), and that `/clear`
+needs a postcondition check. tmux-mcp-rs does not know qwen exists.
+
+**This decision is cheap to reverse.** `panes.py` is the only module permitted to know tmux exists, so
+swapping its guts touches one file. It is a Task-6 implementation detail, not architecture.
+
+The inverse trade is the one worth making, in phase 2: wrap the finished `team` CLI *as* an MCP
+server, giving the lead `team_send` / `team_wait` / `team_verify` as first-class tools. That is ~40
+lines, and it is worth doing only after the CLI has earned its semantics.
+
 ## Hooks — adopted
 
 `set-hook -t <pane> pane-died '<command>'` is accepted by tmux 3.7b, and `run-shell` is a valid hook
