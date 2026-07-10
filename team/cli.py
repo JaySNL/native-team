@@ -85,8 +85,14 @@ def cmd_wait(args, root):
 
 
 def cmd_inbox(args, root):
+    # One corrupt file must not hide every other message. `ops._messages`
+    # already skips these; the lead's own listing must agree.
     for path in sorted(bus.lead_inbox(root).glob("*.json")):
-        print(_digest(bus.read_json(path)))
+        msg = bus._try_read_obj(path)
+        if msg is None:
+            print(f"{path.stem} <unreadable>")
+            continue
+        print(_digest(msg))
     return OK
 
 
@@ -150,7 +156,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("send")
     p.add_argument("agent")
-    p.add_argument("--new-task", dest="new_task", action="store_true")
     p.add_argument("--question", default="")
     p.add_argument("--scope", nargs="*")
     p.add_argument("--supersede", action="store_true")
@@ -218,3 +223,12 @@ def main(argv: list[str]) -> int:
     except panes.PaneError as exc:
         print(f"pane error: {exc}", file=sys.stderr)
         return PANE_GONE
+    except FileNotFoundError as exc:
+        # A typo'd id, or `send` before `init`. Exiting 1 here would be
+        # indistinguishable from VERIFY_FAIL, and a traceback is never a
+        # user-facing error.
+        print(f"refused: no such file: {exc.filename}", file=sys.stderr)
+        return REFUSED
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"refused: unreadable bus file: {exc}", file=sys.stderr)
+        return REFUSED

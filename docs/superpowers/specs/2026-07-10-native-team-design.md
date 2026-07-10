@@ -223,7 +223,7 @@ An agent has an **open task** iff its inbox task has no matching result. Idlenes
 pty-scraping — `capture-pane` is never parsed to guess whether a model is thinking. The filesystem
 already knows.
 
-- `team send <agent> --new-task` refuses when that agent has an open task, unless `--supersede`.
+- `team send <agent>` refuses when that agent has an open task, unless `--supersede`.
 - `team send <agent> --reply <id>` is permitted only when that agent's last message was `blocked` —
   precisely the state in which it is sitting at a prompt.
 
@@ -410,7 +410,7 @@ didn't. The requirement was observability, and observability is what this delive
 team init [--force]                     create .team/, write .qwen/settings.json (backing up
                                         any existing), append .team/ and .qwen/ to .gitignore
 team down                               restore .qwen/settings.json, kill session, remove .team/
-team send <agent> --new-task --question <text> --scope <path>... [--supersede]
+team send <agent> --question <text> --scope <path>... [--supersede]
 team send <agent> --reply <msg-id> <text>
 team wait --for lead [--timeout N]
 team wait --task <id>... [--timeout N]
@@ -420,15 +420,15 @@ team log <agent> [--tail N]             de-ANSI'd, de-duped, spinner-stripped tr
 team msg --note|--blocked|--failed --task <id> <text>     (grunt-side)
 team result add --task <id> --file F --line N --symbol S --evidence E   (grunt-side)
 team result done --task <id>                                            (grunt-side)
-team verify <task-id> [--show] [--strict]
+team verify <task-id> [--show] [--lenient]
 ```
 
 ### Exit codes
 
 | Code | Meaning |
 |---|---|
-| 0 | ok (including `verify` with FAILs — a FAIL is information, not an error) |
-| 1 | `verify --strict` and at least one FAIL |
+| 0 | ok (a `verify` with FAILs only exits 0 under `--lenient`) |
+| 1 | `verify` found at least one FAIL — it fails closed |
 | 2 | target pane gone |
 | 3 | schema violation |
 | 4 | timeout |
@@ -447,7 +447,7 @@ Distinct codes let the lead's Bash branch without parsing text.
 - **`team wait` accepts a list of task ids** from day one, for the same reason.
 - **Polling at 250ms.** Turns take tens of seconds. No inotify, no dependency.
 - **Stale bus state is a wrong-answer bug, not an ergonomics gap.** A `.team/` surviving from
-  yesterday makes `team wait` return instantly on a stale result, and makes `--new-task` refuse
+  yesterday makes `team wait` return instantly on a stale result, and makes `team send` refuse
   because a grunt has an "open task" that died with last night's pane. `team init` therefore refuses
   to run over an existing `.team/` unless `--force`.
 

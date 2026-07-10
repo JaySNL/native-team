@@ -370,3 +370,47 @@ class VerifyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AbsolutePathPolicyTest(unittest.TestCase):
+    """The absolute-path guard's ONLY unique behavior: an absolute path that
+    resolves INSIDE the repo is still OUT_OF_TREE. Citations are repo-relative
+    by contract; without this the guard is redundant with the containment
+    check and no test defends it.
+    """
+
+    def test_absolute_path_inside_the_repo_is_out_of_tree(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "a.py").write_text("x = 1\n")
+            rec = {"file": str(root / "a.py"), "line": 1,
+                   "symbol": "x", "evidence": "x = 1"}
+            v = verify.verify_record(root, rec)
+            self.assertEqual(v.status, "OUT_OF_TREE", v)
+
+
+class StatusVocabularyTest(unittest.TestCase):
+    def test_every_verdict_a_record_can_produce_is_declared_in_statuses(self):
+        """STATUSES is the closed vocabulary the lead branches on. A new
+        verdict added to verify_record without adding it here would be a
+        silent contract break.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "a.py").write_text("x = 1\n")
+            (root / "bin.dat").write_bytes(b"\xff\xfe\x00")
+            records = [
+                {"file": "a.py", "line": 1, "symbol": "x", "evidence": "x = 1"},
+                {"file": "a.py", "line": 2, "symbol": "x", "evidence": "x = 1"},
+                {"file": "a.py", "line": 1, "symbol": "zz", "evidence": "x = 1"},
+                {"file": "nope.py", "line": 1, "symbol": "x", "evidence": "x = 1"},
+                {"file": "../out.py", "line": 1, "symbol": "x", "evidence": "x = 1"},
+                {"file": "bin.dat", "line": 1, "symbol": "x", "evidence": "x = 1"},
+                {"file": "a.py", "line": 1, "symbol": "x", "evidence": "nowhere"},
+                None,
+            ]
+            seen = {verify.verify_record(root, r).status for r in records}
+            self.assertTrue(seen <= set(verify.STATUSES), seen - set(verify.STATUSES))
+            # The sweep must actually exercise most of the vocabulary, else it
+            # would pass trivially on a single verdict.
+            self.assertGreaterEqual(len(seen), 6, seen)

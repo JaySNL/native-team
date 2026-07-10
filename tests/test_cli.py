@@ -88,6 +88,39 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("OFF_BY", out)
 
+    def test_verify_missing_task_is_refused_not_a_traceback(self):
+        """Exit 1 here would be indistinguishable from VERIFY_FAIL, and a
+        FileNotFoundError traceback is never a user-facing error.
+        """
+        self.run_cli("init")
+        code, out = self.run_cli("verify", "999")
+        self.assertEqual(code, 3, out)
+        self.assertNotIn("Traceback", out)
+        self.assertIn("no such file", out)
+
+    def test_show_missing_message_is_refused_not_a_traceback(self):
+        self.run_cli("init")
+        code, out = self.run_cli("show", "999")
+        self.assertEqual(code, 3, out)
+        self.assertNotIn("Traceback", out)
+
+    def test_send_before_init_is_refused_not_a_traceback(self):
+        code, out = self.run_cli("send", "grunt1",
+                                 "--question", "q", "--scope", "a.py")
+        self.assertEqual(code, 3, out)
+        self.assertNotIn("Traceback", out)
+
+    def test_inbox_skips_a_corrupt_file_instead_of_crashing(self):
+        self.run_cli("init")
+        (bus.team_dir(self.root) / "inbox" / "grunt1").mkdir(parents=True)
+        tid = ops.compose_task(self.root, "grunt1", "q", ["a.py"])
+        ops.post_message(self.root, "grunt1", "note", tid, "a real message")
+        (bus.lead_inbox(self.root) / "001.json").write_text("not json")
+        code, out = self.run_cli("inbox")
+        self.assertEqual(code, 0, out)
+        self.assertIn("<unreadable>", out)
+        self.assertIn("a real message", out)
+
     def test_verify_lenient_is_the_deliberate_opt_out(self):
         tid = self._sealed_task()
         self._corrupt_the_line(tid)

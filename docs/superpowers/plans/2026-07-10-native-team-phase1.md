@@ -1696,7 +1696,7 @@ class CliTest(unittest.TestCase):
         bad = bus.read_json(bus.result_path(self.root, tid))
         bad["records"][0]["line"] = 2
         bus.write_json(bus.result_path(self.root, tid), bad)
-        code, out = self.run_cli("verify", tid, "--strict")
+        code, out = self.run_cli("verify", tid)
         self.assertEqual(code, 1)
         self.assertIn("OFF_BY", out)
 
@@ -1746,7 +1746,7 @@ Expected: `ModuleNotFoundError: No module named 'team.cli'`
 ```python
 """Argument parsing, wiring, and the exit-code contract.
 
-  0 ok · 1 verify FAIL under --strict · 2 pane gone
+  0 ok · 1 verify FAIL (unless --lenient) · 2 pane gone
   3 refused (schema violation or invalid state) · 4 timeout
 """
 import argparse
@@ -1878,7 +1878,7 @@ def cmd_verify(args, root):
     if args.show:
         print(json.dumps(payload["records"], indent=2))
     failed = verify.any_failed(verdicts)
-    return VERIFY_FAIL if (failed and args.strict) else OK
+    return OK if (args.lenient or not failed) else VERIFY_FAIL
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1893,7 +1893,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("send")
     p.add_argument("agent")
-    p.add_argument("--new-task", dest="new_task", action="store_true")
     p.add_argument("--question", default="")
     p.add_argument("--scope", nargs="*")
     p.add_argument("--supersede", action="store_true")
@@ -1940,7 +1939,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("verify")
     p.add_argument("task")
     p.add_argument("--show", action="store_true")
-    p.add_argument("--strict", action="store_true")
+    p.add_argument("--lenient", action="store_true")
     p.set_defaults(fn=cmd_verify)
 
     return ap
@@ -2069,7 +2068,7 @@ tmux attach -t team   # detach with C-b d
 From the lead pane (a real `claude`), confirm `/compact` is accepted — that is papercut #1, the reason for the whole exercise. Then, from any shell:
 
 ```bash
-team send grunt1 --new-task --question "Where is try_heal defined?" --scope bed.py
+team send grunt1 --question "Where is try_heal defined?" --scope bed.py
 team wait --task 001 --timeout 600
 team verify 001
 ```
@@ -2090,7 +2089,7 @@ d = json.loads(p.read_text())
 d["records"][0]["line"] = 3
 p.write_text(json.dumps(d))
 EOF
-team verify 001 --strict; echo "exit=$?"
+team verify 001; echo "exit=$?"
 ```
 
 Expected: `OFF_BY ... cited 3, actual 2 (off by -1)` and `exit=1`.
@@ -2114,7 +2113,7 @@ A file-based bus for running a `claude` lead and interactive `qwen` grunts in ad
 
     team init          # create .team/, install grunt qwen settings
     team-up 1          # tmux session: lead + 1 grunt
-    team send grunt1 --new-task --question "..." --scope src/A.cs
+    team send grunt1 --question "..." --scope src/A.cs
     team wait --task 001 --timeout 600     # background this from the lead
     team verify 001                        # re-reads every cited line
     team down          # restore .qwen/settings.json, remove the bus
