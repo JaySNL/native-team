@@ -120,6 +120,12 @@ def init(root: Path, force: bool = False) -> list[str]:
         # overwrote -- that is what makes repeated --force idempotent and
         # keeps us from re-copying our own output over the *real* backup.
         created = prior_meta["created_qwen_settings"]
+    elif settings.exists() and bus._try_read_obj(settings) == GRUNT_SETTINGS:
+        # Provenance was lost -- someone removed .team by hand instead of
+        # running `team down`. But the file on disk is byte-for-byte our own
+        # GRUNT_SETTINGS, so it cannot be user content. Treat it as ours, or
+        # `down` will "restore" our YOLO config as though the user wrote it.
+        created = True
     else:
         created = not settings.exists()
         if not created:

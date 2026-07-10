@@ -1,4 +1,5 @@
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -253,3 +254,35 @@ class ConfigTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LostProvenanceTest(unittest.TestCase):
+    """`rm -rf .team` (instead of `team down`) destroys init.json. The next
+    init must not mistake its own GRUNT_SETTINGS for user content, or `down`
+    leaves a YOLO grunt config behind in the user's repo. Observed live.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / ".git").mkdir()
+
+    def test_reinit_after_manual_team_removal_leaves_no_settings_behind(self):
+        config.init(self.root)                      # user had no settings.json
+        shutil.rmtree(bus.team_dir(self.root))      # provenance destroyed
+        config.init(self.root)
+        config.down(self.root)
+        self.assertFalse((self.root / ".qwen" / "settings.json").exists(),
+                         "team down left our YOLO settings in the repo")
+        self.assertFalse((self.root / ".qwen" / "settings.json.team-backup").exists())
+
+    def test_real_user_settings_still_survive_the_same_dance(self):
+        q = self.root / ".qwen"
+        q.mkdir()
+        (q / "settings.json").write_text(json.dumps({"mine": True}))
+        config.init(self.root)
+        shutil.rmtree(bus.team_dir(self.root))
+        config.init(self.root, force=True)
+        config.down(self.root)
+        self.assertEqual(json.loads((q / "settings.json").read_text()), {"mine": True})
