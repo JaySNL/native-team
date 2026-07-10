@@ -21,7 +21,6 @@ import re
 ANSI = re.compile(
     r"\x1b\[[0-9;?]*[A-Za-z]"      # CSI (SGR, cursor, erase)
     r"|\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)"  # OSC (no newlines in body), BEL or ST-terminated
-    r"|\x1bP[^\x1b\n]*(?:\x07|\x1b\\)"       # DCS (no newlines in body), BEL or ST-terminated
     r"|\x9b[0-9;?]*[A-Za-z]"       # 8-bit CSI (C1 equivalent of ESC [)
     r"|\x1b[()][AB012]"             # charset selection
     r"|\x1b[=>]"                    # keypad mode

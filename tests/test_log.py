@@ -102,14 +102,19 @@ class LogTest(unittest.TestCase):
         # Torn line dropped; 'BBB' and the genuine 'AAA' survive, in order.
         self.assertEqual(result.split("\n"), ["BBB", "AAA"])
 
-    def test_8bit_c1_csi_not_in_output(self):
-        """The 8-bit C1 CSI introducer \\x9b is not the same as \\x1b[.
-        Both must be stripped from output.
+    def test_8bit_c1_csi_is_stripped_and_content_survives(self):
+        """A genuine 8-bit CSI (\\x9b, the C1 twin of \\x1b[) is stripped in place,
+        so the text it wraps survives.
+
+        Note the sequence has no '[' -- \\x9b IS the introducer. Writing
+        "\\x9b[0m" would be a malformed sequence the pattern must not match,
+        which is why that input proves nothing about this alternative.
         """
-        result = log.render("before\x9b[0mafter")
-        self.assertNotIn("\x9b", result, "8-bit CSI introducer must not be in output")
-        # The content may be corrupted by the unrecognized sequence, but no escape should remain
-        self.assertNotIn("\x1b", result, "ESC must not be in output")
+        self.assertEqual(log.render("before\x9b0mafter"), "beforeafter")
+
+    def test_malformed_8bit_csi_drops_the_line(self):
+        """A \\x9b that starts no valid sequence is a torn write: the line goes."""
+        self.assertEqual(log.render("keep\nbefore\x9b[0mafter"), "keep")
 
     def test_both_osc_terminators_still_work_regression(self):
         """Regression: Ensure both OSC terminators (BEL and ST) continue to work."""
@@ -119,11 +124,15 @@ class LogTest(unittest.TestCase):
         result_st = log.render("\x1b]0;title\x1b\\kept")
         self.assertEqual(result_st, "kept", "ST-terminated OSC must work")
 
-    def test_dcs_sequence_produces_no_escapes(self):
-        """DCS-style sequences (\\x1bP...\\x1b\\\\) must also not leave escapes in output."""
-        result = log.render("\x1bPsomething\x1b\\tail")
-        self.assertNotIn("\x1b", result, "DCS sequence must not leak escapes")
-        self.assertNotIn("\x9b", result, "8-bit CSI must not be in output")
+    def test_dcs_line_is_dropped_not_parsed(self):
+        """There is deliberately no DCS alternative in the pattern.
+
+        A DCS body is a non-printing device-control payload, so the drop-line
+        safety net loses nothing real. qwen emits none (measured: zero \\x1bP
+        in a 341 KB capture). The guarantee that matters is that no escape
+        byte reaches the output.
+        """
+        self.assertEqual(log.render("keep\n\x1bPsomething\x1b\\tail"), "keep")
 
 
 if __name__ == "__main__":
