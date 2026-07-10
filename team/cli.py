@@ -10,8 +10,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from team import (api, bus, buildverify, collect, config, log, ops, panes,
-                  verify, wait, worktrees)
+from team import (__version__, api, bus, buildverify, collect, config, log,
+                  ops, panes, verify, wait, worktrees)
 from team.config import StateError
 from team.schema import SchemaError
 
@@ -478,6 +478,8 @@ def cmd_verify(args, root):
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="team")
+    ap.add_argument("--version", action="version",
+                    version=f"team {__version__}")
     ap.add_argument("--root", default=None,
                     help="bus root (default: nearest ancestor holding .team)")
     sub = ap.add_subparsers(dest="cmd", required=True)
