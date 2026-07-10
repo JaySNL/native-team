@@ -25,7 +25,10 @@ ANSI = re.compile(
     r"|\x1b[()][AB012]"             # charset selection
     r"|\x1b[=>]"                    # keypad mode
 )
-SPINNER = re.compile(r"\(\d+(?:\.\d+)?s\s*·\s*esc to cancel\)")
+# qwen renders elapsed time as "7.5s", "2m", "2m 15s", "1h 2m 3s". The
+# original pattern only matched seconds, so a real 1.1 MB capture came
+# back still full of spinner frames.
+SPINNER = re.compile(r"\((?:\d+(?:\.\d+)?[hms]\s*)+·\s*esc to cancel\)")
 
 
 def render(raw: str) -> str:

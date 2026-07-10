@@ -154,3 +154,19 @@ class LogTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpinnerFormatTest(unittest.TestCase):
+    """qwen formats elapsed time four ways. A seconds-only filter left a real
+    1.1 MB capture full of spinner frames.
+    """
+
+    def test_every_elapsed_format_is_dropped(self):
+        for elapsed in ("7.5s", "0.1s", "2m", "2m 15s", "1h 2m 3s"):
+            with self.subTest(elapsed=elapsed):
+                raw = f"keep me\n({elapsed} · esc to cancel)\n"
+                self.assertEqual(log.render(raw), "keep me")
+
+    def test_a_real_line_that_merely_mentions_cancelling_survives(self):
+        self.assertEqual(log.render("(3 items · esc to cancel)\n"),
+                         "(3 items · esc to cancel)")
