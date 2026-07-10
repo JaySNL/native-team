@@ -200,6 +200,23 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(canary.exists())
         self.assertTrue(external_team.exists())
 
+    def test_down_refuses_an_in_repo_directory_not_named_dot_team(self):
+        # Isolates the name check. A real directory, not a symlink, physically
+        # inside the repo -- so the symlink refusal and the parent-containment
+        # check both pass. Only `resolved.name != ".team"` stands between a
+        # buggy bus.team_dir() and rmtree'ing the user's source tree.
+        victim = self.root / "src"
+        victim.mkdir()
+        canary = victim / "canary.txt"
+        canary.write_text("keep me")
+
+        with patch.object(config.bus, "team_dir", return_value=victim):
+            with self.assertRaisesRegex(config.StateError, "not '.team'"):
+                config.down(self.root)
+
+        self.assertEqual(canary.read_text(), "keep me")
+        self.assertTrue(victim.exists())
+
     def test_down_refuses_team_dir_symlinked_to_a_team_named_dir_inside_repo(self):
         # The symlink target is named exactly ".team" and lives *inside* the
         # repo (root/elsewhere/.team), so both the name check and the
