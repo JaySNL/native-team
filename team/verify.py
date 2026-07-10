@@ -23,7 +23,8 @@ def verify_record(root: Path, rec: dict) -> Verdict:
     if not path.is_file():
         return Verdict(rec, "NO_FILE", f"no such file: {rec['file']}")
 
-    lines = path.read_text(errors="replace").splitlines()
+    text = path.read_text(errors="replace")
+    lines = text.split("\n")
     cited = rec["line"]
     want = evidence.strip()
 
