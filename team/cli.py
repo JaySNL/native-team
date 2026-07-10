@@ -14,6 +14,13 @@ from team.schema import SchemaError
 
 OK, VERIFY_FAIL, PANE_GONE, REFUSED, TIMEOUT = 0, 1, 2, 3, 4
 
+# `init` runs before a bus exists and `down` destroys one, so both locate the
+# repo by `.git`. Every other verb addresses an existing bus and must find it by
+# `.team`: a grunt running a build task sits in a git worktree under
+# `.team/work/<agent>`, and `repo_root` would stop at that worktree's own `.git`
+# file and address a bus that isn't there.
+PRE_BUS_COMMANDS = frozenset({"init", "down"})
+
 
 def _roster(root: Path) -> dict:
     return bus.read_json(bus.team_dir(root) / "roster.json")
@@ -221,7 +228,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     try:
-        root = Path(args.root).resolve() if args.root else bus.repo_root()
+        if args.root:
+            root = Path(args.root).resolve()
+        elif args.cmd in PRE_BUS_COMMANDS:
+            root = bus.repo_root()
+        else:
+            root = bus.bus_root()
         return args.fn(args, root)
     except SchemaError as exc:
         print(f"schema violation: {exc}", file=sys.stderr)

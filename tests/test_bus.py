@@ -25,6 +25,36 @@ class BusTest(unittest.TestCase):
             with self.assertRaises(bus.BusError):
                 bus.repo_root(Path(d))
 
+    def test_bus_root_walks_up_to_the_dir_holding_team(self):
+        deep = self.root / "a" / "b"
+        deep.mkdir(parents=True)
+        self.assertEqual(bus.bus_root(deep), self.root)
+
+    def test_bus_root_raises_without_a_bus(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".git").mkdir()
+            with self.assertRaises(bus.BusError):
+                bus.bus_root(Path(d))
+
+    def test_bus_root_ignores_a_git_worktrees_own_gitdir_file(self):
+        """A grunt working in `.team/work/<agent>` sits in a git worktree,
+        whose `.git` is a *file*. `repo_root` stops there and reports the
+        worktree as the repo, so the grunt's `team result add` would look for
+        a bus that does not exist. `bus_root` walks past it to the one bus.
+        """
+        wt = self.root / ".team" / "work" / "grunt1"
+        wt.mkdir(parents=True)
+        (wt / ".git").write_text(f"gitdir: {self.root}/.git/worktrees/grunt1\n")
+
+        self.assertEqual(bus.repo_root(wt), wt)      # the bug
+        self.assertEqual(bus.bus_root(wt), self.root)  # the fix
+
+    def test_bus_root_does_not_mistake_a_team_file_for_a_bus(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".team").write_text("not a bus")
+            with self.assertRaises(bus.BusError):
+                bus.bus_root(Path(d))
+
     def test_atomic_write_leaves_no_partial_file(self):
         p = self.root / "sub" / "x.json"
         bus.write_json(p, {"a": 1})

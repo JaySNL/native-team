@@ -260,3 +260,50 @@ class CliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RootResolutionTest(unittest.TestCase):
+    """`init`/`down` locate the repo by `.git`; every other verb locates the
+    bus by `.team`. The distinction exists so a grunt inside a build task's
+    worktree (`.team/work/<agent>`, whose `.git` is a gitdir *file*) still
+    addresses the one real bus."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        (self.root / ".git").mkdir()
+        self.cwd = mock.patch("pathlib.Path.cwd", return_value=self.root)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run(self, argv, cwd):
+        with mock.patch("pathlib.Path.cwd", return_value=cwd), \
+             redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+            return cli.main(argv), err.getvalue()
+
+    def test_verbs_refuse_before_init_naming_the_missing_bus(self):
+        code, err = self._run(["inbox"], self.root)
+        self.assertEqual(code, cli.REFUSED)
+        self.assertIn(".team/ bus found", err)
+
+    def test_init_works_with_no_bus_present(self):
+        code, _ = self._run(["init"], self.root)
+        self.assertEqual(code, cli.OK)
+        self.assertTrue((self.root / ".team").is_dir())
+
+    def test_a_verb_run_from_a_worktree_finds_the_outer_bus(self):
+        self._run(["init"], self.root)
+        wt = self.root / ".team" / "work" / "grunt1"
+        wt.mkdir(parents=True)
+        (wt / ".git").write_text("gitdir: /elsewhere\n")
+
+        code, err = self._run(["inbox"], wt)
+        self.assertEqual(code, cli.OK, err)
+
+    def test_explicit_root_overrides_discovery(self):
+        self._run(["init"], self.root)
+        with tempfile.TemporaryDirectory() as elsewhere:
+            code, err = self._run(
+                ["--root", str(self.root), "inbox"], Path(elsewhere))
+            self.assertEqual(code, cli.OK, err)

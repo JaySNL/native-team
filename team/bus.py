@@ -14,11 +14,33 @@ class BusError(Exception):
 
 
 def repo_root(start: Path | None = None) -> Path:
+    """The enclosing git repository. Used only by `init` and `down`, which run
+    before the bus exists or while destroying it."""
     cur = (start or Path.cwd()).resolve()
     for cand in [cur, *cur.parents]:
         if (cand / ".git").exists():
             return cand
     raise BusError(f"not inside a git repository: {cur}")
+
+
+def bus_root(start: Path | None = None) -> Path:
+    """The directory holding the bus. Every verb but `init`/`down` wants this.
+
+    Not `repo_root`. A grunt working inside a git worktree -- `.team/work/<agent>`,
+    where a build task runs -- would have `repo_root` stop at the worktree's own
+    `.git` *file* and report the worktree as the repo. Its `team result add`
+    would then address a bus that does not exist. Walking up for `.team` instead
+    finds the one real bus, and terminates correctly even from inside
+    `.team/work/<agent>`, since none of `<agent>`, `work`, or `.team` contains a
+    `.team` of its own.
+    """
+    cur = (start or Path.cwd()).resolve()
+    for cand in [cur, *cur.parents]:
+        if (cand / TEAM).is_dir():
+            return cand
+    raise BusError(
+        f"no {TEAM}/ bus found in {cur} or any parent. Run `team init` first."
+    )
 
 
 def team_dir(root: Path) -> Path:
