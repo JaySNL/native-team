@@ -116,6 +116,23 @@ class LogTest(unittest.TestCase):
         """A \\x9b that starts no valid sequence is a torn write: the line goes."""
         self.assertEqual(log.render("keep\nbefore\x9b[0mafter"), "keep")
 
+    def test_charset_selection_is_stripped_and_content_survives(self):
+        """Charset switches are zero-width and sit next to real text.
+
+        The 341 KB qwen capture contains none -- Ink draws borders with Unicode,
+        not the alt charset. But the grunt's shell is unrestricted, and `tput
+        sgr0`, ncurses, and git colour output all emit "\\x1b(B". Without this
+        alternative the residual ESC drops the whole line, taking real
+        transcript with it.
+        """
+        self.assertEqual(log.render("before\x1b(Bafter"), "beforeafter")
+        self.assertEqual(log.render("box\x1b(0qqq\x1b(Bend"), "boxqqqend")
+
+    def test_keypad_mode_is_stripped_and_content_survives(self):
+        """Keypad mode switches are zero-width; same reasoning as charset."""
+        self.assertEqual(log.render("before\x1b=after"), "beforeafter")
+        self.assertEqual(log.render("before\x1b>after"), "beforeafter")
+
     def test_both_osc_terminators_still_work_regression(self):
         """Regression: Ensure both OSC terminators (BEL and ST) continue to work."""
         result_bel = log.render("\x1b]0;title\x07kept")
