@@ -174,6 +174,16 @@ class SpinnerFormatTest(unittest.TestCase):
         raw = "keep me\n(49.7s · \u2191 316 tokens · esc to cancel)\n"
         self.assertEqual(log.render(raw), "keep me")
 
+    def test_spinner_wrapped_across_two_lines_is_dropped(self):
+        """In a narrow pane qwen wraps the spinner. Neither half matches the
+        whole-frame pattern. Observed live: 4 frames survived a 1.1 MB capture.
+        """
+        raw = ("keep me\n"
+               ".. joke text (2m 1s \u00b7 \u2191 740 tokens \u00b7\n"
+               "  .                  esc to cancel)\n"
+               "keep me too\n")
+        self.assertEqual(log.render(raw), "keep me\nkeep me too")
+
     def test_a_real_line_that_merely_mentions_cancelling_survives(self):
         self.assertEqual(log.render("(3 items · esc to cancel)\n"),
                          "(3 items · esc to cancel)")

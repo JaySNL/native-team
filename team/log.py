@@ -29,6 +29,13 @@ ANSI = re.compile(
 # original pattern only matched seconds, so a real 1.1 MB capture came
 # back still full of spinner frames.
 SPINNER = re.compile(r"\((?:\d+(?:\.\d+)?[hms]\s*)+·[^)]*esc to cancel\)")
+# In a narrow pane qwen wraps the spinner across two terminal lines:
+#     .. Why did the developer go broke? ... (2m 1s . 740 tokens .
+#                                             esc to cancel)
+# Neither half matches SPINNER -- the head has no ")", the tail no elapsed
+# time. Both are matched per line, so neither can swallow real content.
+SPINNER_HEAD = re.compile(r"\((?:\d+(?:\.\d+)?[hms]\s*)+·[^)]*·\s*$")
+SPINNER_TAIL = re.compile(r"^[\s.]*esc to cancel\)\s*$")
 
 
 def render(raw: str) -> str:
@@ -53,7 +60,8 @@ def render(raw: str) -> str:
         line = line.rstrip()
         if not line.strip():
             continue
-        if SPINNER.search(line):
+        if (SPINNER.search(line) or SPINNER_HEAD.search(line)
+                or SPINNER_TAIL.match(line)):
             continue
         if line in seen:
             continue
