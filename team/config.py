@@ -169,7 +169,9 @@ def init(root: Path, force: bool = False, wt=None) -> list[str]:
 
     return [
         f"bus ready at {team}",
-        f"wrote {settings} (grunt: no context files, no write tools, approvalMode=YOLO)",
+        f"wrote {settings} (grunt: no context files, approvalMode=YOLO). "
+        f"A grunt's write tools and shell stay unrestricted; its worktree, not "
+        f"this file, is what contains it.",
         "WARNING: while this session is live, your own `qwen` in this repo loses "
         "CLAUDE.md context and runs in YOLO mode. `team down` restores it.",
         *notes,

@@ -57,3 +57,10 @@ now names that case. Both remain failures.
 I and J are the same root cause and are fixed together in the worktree spec's
 Amendment 1: the grunt pane's cwd is now its worktree, `verify_build` gained
 `ESCAPED`, and no document in this repo claims a grunt lacks write tools.
+
+| M | The Amendment-1 pane cwd actually contains a grunt's writes | PASS | live task 001 (re-run of 013's exact question): grunt used `WriteFile` again, file landed in `.team/work/grunt1/probe/WaveTally.cs`, main tree `git status -uall` empty, `build 001: PASS` |
+| N | A build task's citations are verified | FAIL, then fixed | live 001: grunt cited `probe/WaveTally.cs:7 WaveTally`; `grep -n` says line 6. `verify` printed `PASS` — `cmd_verify` never read the records on a build task. Now verified against the worktree; the same run reports `PASS` for the build and `OFF_BY` for the citation, exit 1 |
+
+N is the thesis restated: the compiler proves the code, and only `verify` proves
+the pointer. The grunt wrote a correct, compiling file and mis-numbered the one
+line it pointed at — in a task whose protocol told it to use `grep -n`.

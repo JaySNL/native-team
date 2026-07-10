@@ -78,4 +78,13 @@ def collect(root: Path, tid: str, wt=None) -> list[str]:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         actions.append(f"collected {rel}")
+
+    # Record what we moved. `verify_build`'s ESCAPED check reads "a declared
+    # file exists in the main tree" -- which, after a collect, is true because
+    # *we* put it there. Re-running `team verify` on a collected task would
+    # otherwise accuse the grunt of the copy the lead just made. Written after
+    # the copies: a snapshot claiming a file was collected must never outlive a
+    # failure to collect it.
+    snap["collected"] = sorted(set(snap.get("collected", [])) | {r for _, _, r in plan})
+    bus.write_json(bus.snapshot_path(root, tid), snap)
     return actions

@@ -202,11 +202,32 @@ def cmd_result(args, root):
     return OK
 
 
+def _records(root: Path, tid: str) -> list[dict]:
+    path = bus.result_path(root, tid)
+    return bus.read_json(path)["records"] if path.is_file() else []
+
+
 def cmd_verify(args, root):
     if buildverify.is_build_task(root, args.task):
         v = buildverify.verify_build(root, args.task)
         print(buildverify.render(v))
-        return OK if (args.lenient or not v.failed) else VERIFY_FAIL
+        failed = v.failed
+
+        # A build task's citations are checked too, against the worktree the
+        # grunt wrote them in. Measured on the first clean build run: the file
+        # was correct, compiled, and the grunt cited line 7 of a symbol on line
+        # 6. The compiler proves the code. Only `verify` proves the pointer.
+        # Skipped when the task-level check already failed: there is no sound
+        # tree to resolve a path against.
+        if not v.failed:
+            records = _records(root, args.task)
+            if records:
+                work = worktrees.path(root, bus.read_json(
+                    bus.snapshot_path(root, args.task))["agent"])
+                verdicts = verify.verify_records(work, records)
+                print(verify.render_table(args.task, verdicts))
+                failed = verify.any_failed(verdicts)
+        return OK if (args.lenient or not failed) else VERIFY_FAIL
 
     payload = bus.read_json(bus.result_path(root, args.task))
     verdicts = verify.verify_records(root, payload["records"])

@@ -53,20 +53,26 @@ def _unexpected(before: list[str], now: list[str], allowed: set[str]) -> list[st
     return out
 
 
-def _escaped(root: Path, created: list[str]) -> list[str]:
-    """Declared files that turned up in the MAIN tree.
+def _escaped(root: Path, created: list[str], collected: list[str]) -> list[str]:
+    """Declared files that turned up in the MAIN tree without going through
+    `collect`.
 
     Measured, task 013: qwen's `WriteFile` resolves against its project root and
     takes no cwd, so a pane rooted in the main tree wrote the declared file
     there. `compose_build_task` refuses to dispatch if the path already exists
     in the main tree, so anything found here appeared during the task.
 
+    `collect` records what it copied, because after a collect the file is in the
+    main tree *because the lead put it there* -- and a second `team verify`
+    would otherwise accuse the grunt of the lead's copy.
+
     Deliberately not a full main-tree diff. The lead edits the main tree while
     the grunt works; a general diff would fire on the lead's own work every run,
     and a check that cries wolf gets `--lenient`'d. The pane's cwd is the fence.
     This is the tripwire on the one gate a grunt was measured walking through.
     """
-    return [rel for rel in created if (root / rel).exists()]
+    done = set(collected)
+    return [rel for rel in created if rel not in done and (root / rel).exists()]
 
 
 def verify_build(root: Path, tid: str, wt=None) -> TaskVerdict:
@@ -77,7 +83,7 @@ def verify_build(root: Path, tid: str, wt=None) -> TaskVerdict:
 
     # Before NO_WORKTREE: a grunt that wrote into the main tree because it had
     # no worktree to write into is exactly the failure worth naming.
-    escaped = _escaped(root, created)
+    escaped = _escaped(root, created, list(snap.get("collected", [])))
     if escaped:
         return TaskVerdict(tid, "ESCAPED",
                            f"{agent} wrote outside its worktree, into the main "

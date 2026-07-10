@@ -2,7 +2,7 @@ import io, shutil, subprocess, tempfile, unittest
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 
-from team import buildverify, bus, cli, config, ops, worktrees
+from team import buildverify, bus, cli, collect, config, ops, worktrees
 from team.config import StateError
 
 CSPROJ = """<Project Sdk="Microsoft.NET.Sdk">
@@ -145,6 +145,41 @@ class EscapeTest(_Repo):
             buildverify.verify_build(self.root, tid, wt=Spy(self.wt)).status,
             "ESCAPED")
         self.assertEqual(calls, [])
+
+    def test_collecting_is_not_escaping(self):
+        """`collect` puts the declared file in the main tree on purpose. A
+        second `team verify` must not then accuse the grunt of the copy the
+        lead just made."""
+        tid = self._send()
+        self._grunt_writes("probe/C.cs", GOOD)
+        ops.result_add(self.root, tid, {"file": "probe/C.cs", "line": 1,
+                                        "symbol": "C", "evidence": GOOD.strip()})
+        ops.result_done(self.root, tid, "grunt1")
+        collect.collect(self.root, tid, wt=self.wt)
+
+        v = buildverify.verify_build(
+            self.root, tid, wt=FakeBuildTest._Wt(self.wt, 0, "ok"))
+        self.assertEqual(v.status, "PASS")
+
+    def test_an_uncollected_sibling_still_escapes_after_a_collect(self):
+        tid = self._send(create=["probe/C.cs", "probe/D.cs"])
+        self._grunt_writes("probe/C.cs", GOOD)
+        self._grunt_writes("probe/D.cs", GOOD)
+        ops.result_add(self.root, tid, {"file": "probe/C.cs", "line": 1,
+                                        "symbol": "C", "evidence": GOOD.strip()})
+        ops.result_done(self.root, tid, "grunt1")
+        collect.collect(self.root, tid, wt=self.wt)      # both declared paths
+        (self.root / "probe" / "E.cs").write_text(GOOD)  # not declared: invisible here
+
+        # now fake an escape of a declared path by un-collecting it
+        snap = bus.read_json(bus.snapshot_path(self.root, tid))
+        snap["collected"] = ["probe/C.cs"]
+        bus.write_json(bus.snapshot_path(self.root, tid), snap)
+
+        v = buildverify.verify_build(self.root, tid, wt=self.wt)
+        self.assertEqual(v.status, "ESCAPED")
+        self.assertIn("probe/D.cs", v.detail)
+        self.assertNotIn("probe/C.cs", v.detail)
 
     def test_send_refuses_when_the_create_path_already_exists_in_the_main_tree(self):
         """Without this, ESCAPED would fire on a file the lead put there."""
@@ -381,6 +416,57 @@ class CliDispatchTest(_Repo):
         code, out = self._verify()
         self.assertEqual(code, cli.OK)
         self.assertIn("PASS", out)
+
+    def _seal(self, line):
+        ops.result_add(self.root, self.tid, {
+            "file": "probe/C.cs", "line": line, "symbol": "C",
+            "evidence": GOOD.strip()})
+        ops.result_done(self.root, self.tid, "grunt1")
+
+    def test_a_build_tasks_citations_are_verified_against_the_worktree(self):
+        """The compiler proves the code. Only `verify` proves the pointer.
+        Measured on the first clean build run: correct file, compiles, and the
+        grunt cited line 7 of a symbol that was on line 6."""
+        self.tid = self._send()
+        self._grunt_writes("probe/C.cs", GOOD)
+        if not HAVE_DOTNET:
+            self.skipTest("dotnet not installed")
+        self._seal(line=7)                       # GOOD is one line; 7 is a lie
+        code, out = self._verify()
+        self.assertEqual(code, cli.VERIFY_FAIL)
+        self.assertIn("PASS", out)               # the build passed...
+        self.assertIn("OFF_BY", out)             # ...the citation did not
+
+    def test_a_true_citation_on_a_passing_build_exits_zero(self):
+        self.tid = self._send()
+        self._grunt_writes("probe/C.cs", GOOD)
+        if not HAVE_DOTNET:
+            self.skipTest("dotnet not installed")
+        self._seal(line=1)
+        code, _ = self._verify()
+        self.assertEqual(code, cli.OK)
+
+    def test_a_failed_build_does_not_pretend_to_check_citations(self):
+        """NOT_CREATED means there is no sound tree to resolve a path against."""
+        self.tid = self._send()
+        code, out = self._verify()
+        self.assertEqual(code, cli.VERIFY_FAIL)
+        self.assertIn("NOT_CREATED", out)
+        self.assertNotIn("OFF_BY", out)
+
+    def test_an_escaped_task_reports_the_escape_not_its_citations(self):
+        """A grunt that wrote outside its worktree can still have sealed a
+        true-looking citation. Printing a citation table beside ESCAPED invites
+        the lead to read the pointer and miss the breach."""
+        self.tid = self._send()
+        self._grunt_writes("probe/C.cs", GOOD)
+        self._seal(line=1)                        # a citation that would PASS
+        (self.root / "probe" / "C.cs").write_text(GOOD)
+
+        code, out = self._verify()
+        self.assertEqual(code, cli.VERIFY_FAIL)
+        self.assertIn("ESCAPED", out)
+        self.assertNotIn("PASS", out)
 
 
 if __name__ == "__main__":

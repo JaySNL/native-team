@@ -295,6 +295,32 @@ no longer tells the grunt to `cd` into its worktree — it is already there.
 **A6 — `result_add` refuses on a sealed task**, so a task's evidence is
 write-once in both directions.
 
+### Two more defects, found by re-running the same task
+
+The fix was verified by tearing the session down, rebuilding it under A1, and
+re-sending task 013's exact question. The grunt used `WriteFile` again — and it
+landed in the worktree. Main tree clean. `verify` said `PASS`.
+
+**A7 — a build task's citations were never verified.** The grunt sealed
+`probe/WaveTally.cs:7 WaveTally`. The symbol is on line **6**. `verify` printed
+`PASS` because `cmd_verify`, on seeing a build task, checked containment and the
+compiler and then returned — it never looked at the records. The spec claimed
+those citations "verify as they do today"; nothing implemented it.
+
+Now: on a build task that passes its task-level checks, sealed records are
+verified against **the grunt's worktree**, and the exit code is the worse of the
+two. Skipped when the task-level check already failed — `ESCAPED` beside a
+green citation table invites the lead to read the pointer and miss the breach.
+
+The compiler proves the code. Only `verify` proves the pointer. The same grunt,
+in the same run, got the code exactly right and the line number wrong by one.
+
+**A8 — `collect` framed the grunt.** `ESCAPED` reads "a declared file exists in
+the main tree", and `collect`'s whole job is to put one there. Running
+`team verify` after `team collect` accused the grunt of the lead's own copy.
+`collect` now records what it moved into the snapshot, and `ESCAPED` skips those
+paths — an uncollected declared file appearing in the main tree still fires.
+
 ### What this costs
 
 - A `find` task on a file you have edited but not committed is refused. Commit,
