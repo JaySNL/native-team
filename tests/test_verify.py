@@ -259,6 +259,53 @@ class VerifyTest(unittest.TestCase):
         self.assertEqual(v.status, "OFF_BY")
         self.assertIn("evidence matches 3 lines", v.detail)
 
+    # ---- Finding: render_table must handle MALFORMED records with missing keys ----
+
+    def test_render_table_malformed_missing_symbol_does_not_raise(self):
+        """render_table over MALFORMED verdict with missing symbol must not raise KeyError."""
+        rec = {"file": "src/Test.cs", "line": 1}  # missing symbol, evidence
+        v = verify.Verdict(rec, "MALFORMED", "record missing field: 'symbol'")
+        # Should not raise KeyError
+        table = verify.render_table("001", [v])
+        self.assertIn("MALFORMED", table)
+        self.assertIn("result 001: 1 records", table)
+
+    def test_render_table_malformed_empty_dict_does_not_raise(self):
+        """render_table over MALFORMED verdict with empty dict record must not raise."""
+        rec = {}
+        v = verify.Verdict(rec, "MALFORMED", "record is empty")
+        # Should not raise KeyError or AttributeError
+        table = verify.render_table("002", [v])
+        self.assertIn("MALFORMED", table)
+
+    def test_render_table_malformed_non_dict_record_does_not_raise(self):
+        """render_table over MALFORMED verdict with non-dict record (e.g. list) must not raise."""
+        rec = []  # not a dict
+        v = verify.Verdict(rec, "MALFORMED", "record is not a dict")
+        # Should not raise AttributeError when calling .get()
+        table = verify.render_table("003", [v])
+        self.assertIn("MALFORMED", table)
+
+    def test_render_table_mixed_pass_and_malformed_counts_correctly(self):
+        """render_table over mixed list of PASS and MALFORMED verdicts counts correctly."""
+        good = self.rec()
+        v_pass = verify.Verdict(good, "PASS", "")
+        bad = {"file": "src/Test.cs"}  # missing line, symbol, evidence
+        v_malformed = verify.Verdict(bad, "MALFORMED", "missing fields")
+        table = verify.render_table("004", [v_pass, v_malformed])
+        self.assertIn("2 records", table)
+        self.assertIn("1 PASS", table)
+        self.assertIn("1 FAIL", table)
+
+    def test_render_table_counts_and_any_failed_regression(self):
+        """Regression: existing test_render_table_counts_and_any_failed still passes."""
+        vs = verify.verify_records(self.root, [self.rec(), self.rec(line=6)])
+        table = verify.render_table("001", vs)
+        self.assertIn("2 records", table)
+        self.assertIn("1 PASS", table)
+        self.assertIn("1 FAIL", table)
+        self.assertTrue(verify.any_failed(vs))
+
 
 if __name__ == "__main__":
     unittest.main()

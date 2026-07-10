@@ -128,8 +128,19 @@ def render_table(task_id: str, verdicts: list[Verdict]) -> str:
             f"{passed} PASS, {failed} FAIL")
     rows = []
     for v in verdicts:
-        loc = f"{v.record['file']}:{v.record['line']}"
-        row = f"  {v.status:<16} {loc} {v.record['symbol']}"
+        # Handle records that are not dicts or are dicts with missing keys.
+        if isinstance(v.record, dict):
+            file_val = v.record.get('file', '?')
+            line_val = v.record.get('line', '?')
+            symbol_val = v.record.get('symbol', '?')
+        else:
+            # Record is not a dict; use placeholders for all fields.
+            file_val = '?'
+            line_val = '?'
+            symbol_val = '?'
+
+        loc = f"{file_val}:{line_val}"
+        row = f"  {v.status:<16} {loc} {symbol_val}"
         if v.detail:
             row += f" — {v.detail}"
         rows.append(row)
