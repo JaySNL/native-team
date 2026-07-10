@@ -91,4 +91,14 @@ PY
 python3 -m team worktree up || \
   echo "warning: no grunt worktrees; build tasks will refuse. find tasks are unaffected." >&2
 
+BRIEF="$(python3 -m team brief 2>/dev/null || true)"
+
 echo "session $SESSION up with $GRUNTS grunt(s). Attach: tmux attach -t $SESSION"
+if [ -n "$BRIEF" ]; then
+  # Deliberately not sent into the lead pane. Injecting keystrokes into a
+  # claude REPL that may not have finished starting is a race, and the leading
+  # Escape that `send_line` uses would cancel whatever it was doing. Paste it.
+  echo
+  echo "In the lead pane (pane 0), paste this once:"
+  echo "    Read $BRIEF and follow it."
+fi

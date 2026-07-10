@@ -307,3 +307,47 @@ class RootResolutionTest(unittest.TestCase):
             code, err = self._run(
                 ["--root", str(self.root), "inbox"], Path(elsewhere))
             self.assertEqual(code, cli.OK, err)
+
+
+class BriefTest(unittest.TestCase):
+    """`team brief` is what a lead runs after a /compact has cost it the path.
+    It must not need a bus, a repo, or a cwd it recognises."""
+
+    def _run(self, argv, cwd):
+        with mock.patch("pathlib.Path.cwd", return_value=Path(cwd)), \
+             redirect_stdout(io.StringIO()) as out, \
+             redirect_stderr(io.StringIO()):
+            return cli.main(argv), out.getvalue()
+
+    def test_brief_prints_a_path_that_exists(self):
+        with tempfile.TemporaryDirectory() as d:   # no .git, no .team
+            code, out = self._run(["brief"], d)
+        self.assertEqual(code, cli.OK)
+        self.assertTrue(Path(out.strip()).is_file())
+
+    def test_brief_show_prints_the_rules_not_the_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            code, out = self._run(["brief", "--show"], d)
+        self.assertEqual(code, cli.OK)
+        self.assertIn("A grunt's citation is not a fact", out)
+
+    def test_brief_refuses_rather_than_crashing_when_the_file_is_gone(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(cli, "BRIEF", Path(d) / "absent.md"):
+                code, _ = self._run(["brief"], d)
+        self.assertEqual(code, cli.REFUSED)
+
+    def test_the_brief_documents_the_real_cli_surface(self):
+        """A brief that names a flag the parser does not have is worse than no
+        brief. Check the verbs it teaches actually parse."""
+        text = cli.BRIEF.read_text()
+        for argv in (["send", "grunt1", "--question", "q", "--scope", "a/b"],
+                     ["wait", "--task", "007", "--timeout", "600"],
+                     ["verify", "007", "--lenient"],
+                     ["send", "grunt1", "--reply", "008", "hi"],
+                     ["send", "grunt1", "--supersede", "--question", "q"],
+                     ["log", "grunt1", "--tail", "5"],
+                     ["inbox"], ["show", "008"], ["down", "--force"]):
+            with self.subTest(argv=argv):
+                cli.build_parser().parse_args(argv)   # must not SystemExit
+                self.assertIn(argv[0], text)

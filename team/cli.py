@@ -21,6 +21,13 @@ OK, VERIFY_FAIL, PANE_GONE, REFUSED, TIMEOUT = 0, 1, 2, 3, 4
 # file and address a bus that isn't there.
 PRE_BUS_COMMANDS = frozenset({"init", "down"})
 
+# `brief` prints the lead's ground rules. It must work from anywhere -- a lead
+# that has lost the path after a /compact is exactly who runs it -- so it
+# resolves no root at all, not even a git one.
+NO_ROOT_COMMANDS = frozenset({"brief"})
+
+BRIEF = Path(__file__).resolve().parent.parent / "TEAMCHAT.md"
+
 
 def _roster(root: Path) -> dict:
     return bus.read_json(bus.team_dir(root) / "roster.json")
@@ -43,6 +50,14 @@ def _digest(msg: dict) -> str:
 def cmd_init(args, root):
     for line in config.init(root, force=args.force):
         print(line)
+    return OK
+
+
+def cmd_brief(args, root):
+    if not BRIEF.is_file():
+        print(f"no brief at {BRIEF}", file=sys.stderr)
+        return REFUSED
+    print(BRIEF.read_text() if args.show else BRIEF)
     return OK
 
 
@@ -188,6 +203,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="discard uncollected grunt work in the worktrees")
     p.set_defaults(fn=cmd_down)
 
+    p = sub.add_parser("brief")
+    p.add_argument("--show", action="store_true", help="print the brief, not its path")
+    p.set_defaults(fn=cmd_brief)
+
     p = sub.add_parser("worktree").add_subparsers(dest="wtcmd", required=True)
     p.add_parser("up").set_defaults(fn=cmd_worktree_up)
 
@@ -252,6 +271,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.cmd in NO_ROOT_COMMANDS:
+            return args.fn(args, None)
         if args.root:
             root = Path(args.root).resolve()
         elif args.cmd in PRE_BUS_COMMANDS:
