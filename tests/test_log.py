@@ -91,22 +91,16 @@ class LogTest(unittest.TestCase):
         self.assertIn("after", result, "Content after OSC terminator should be preserved")
 
     def test_torn_line_collision_defect_2(self):
-        """Finding 2: A line with a residual escape after truncation can collide
-        with a real distinct line via global dedupe and shadow it.
+        """Finding 2: a torn line must not shadow a genuine later line.
 
-        The genuine third line 'AAA' should not be lost just because a torn
-        line was previously truncated to 'AAA'.
+        The escape sits on the SAME line as the first 'AAA'. Truncating that
+        line yields the fragment 'AAA', which the global dedupe then uses to
+        delete the real third-line 'AAA'. Dropping the torn line instead
+        leaves the genuine 'AAA' intact.
         """
-        # First 'AAA' is clean; second 'AAA\x1b[9' has a truncated escape;
-        # third 'AAA' is real again. With truncation-and-truncate strategy,
-        # the torn line becomes 'AAA', which then dedupes the real third 'AAA'.
-        result = log.render("AAA\n\x1b[9\nBBB\nAAA\n")
-        lines = result.split("\n")
-        # Should contain both 'AAA' and 'BBB', with the real 'AAA' present
-        self.assertIn("AAA", lines, f"AAA should be in output lines: {lines}")
-        self.assertIn("BBB", lines, f"BBB should be in output lines: {lines}")
-        # Verify the exact lines
-        self.assertEqual(set(lines), {"AAA", "BBB"}, f"Expected exactly AAA and BBB, got {lines}")
+        result = log.render("AAA\x1b[9\nBBB\nAAA\n")
+        # Torn line dropped; 'BBB' and the genuine 'AAA' survive, in order.
+        self.assertEqual(result.split("\n"), ["BBB", "AAA"])
 
     def test_8bit_c1_csi_not_in_output(self):
         """The 8-bit C1 CSI introducer \\x9b is not the same as \\x1b[.
