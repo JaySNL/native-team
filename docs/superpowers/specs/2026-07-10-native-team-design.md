@@ -313,17 +313,51 @@ produce the matching full source line.
 `actual_line.strip() == evidence.strip()` — indentation drift cannot fabricate a citation, so
 tolerating whitespace costs nothing, while content must match exactly.
 
-For each record:
+Lines are split on `\n` only. **Never `str.splitlines()`**, which also breaks on `\v`, `\f`,
+`\x1c`–`\x1e`, `\x85`, U+2028 and U+2029. A source file containing any of those would make `verify`
+disagree with `sed -n 'Np'` — and a verifier that disagrees with the tool a human checks it with is
+worthless. Measured: a two-newline file containing one U+2028 made `splitlines()` report three lines,
+grading a *correct* citation as `OFF_BY`.
 
-| Condition | Verdict |
-|---|---|
-| Line at `file:line` matches `evidence` | **PASS** |
-| `evidence` matches some other line in the file | **FAIL: off by N** |
-| `evidence` matches no line in the file | **FAIL: fabricated** |
-| `symbol` is not a substring of `evidence` | **FAIL: symbol/evidence mismatch** |
+Eight verdicts, evaluated in this order. Anything that is not `PASS` is a failure.
 
-"Off by N" is the observed `TreatmentBed.cs:43`-for-a-method-at-`:36` papercut, caught automatically.
-"Symbol/evidence mismatch" is the observed "reported a grep hit as a verified fact" failure.
+| # | Verdict | Condition |
+|---|---|---|
+| 1 | `MALFORMED` | The record is unusable: not a dict; a missing field; `file`/`symbol`/`evidence` not a `str`; `line` not a positive `int` (`bool` excluded); `symbol` or `evidence` empty after `.strip()` |
+| 2 | `SYMBOL_MISMATCH` | `symbol` is not a substring of `evidence` |
+| 3 | `OUT_OF_TREE` | The cited path is absolute, or escapes `root` after `resolve()` |
+| 4 | `NO_FILE` | The path does not exist, or is not a regular file |
+| 5 | `UNREADABLE` | The file's bytes are not valid UTF-8 |
+| 6 | `PASS` | The line at `file:line` matches `evidence` |
+| 7 | `OFF_BY` | `evidence` matches some other line in the file |
+| 8 | `FABRICATED` | `evidence` matches no line in the file |
+
+`OFF_BY` is the observed `TreatmentBed.cs:43`-for-a-method-at-`:36` papercut, caught automatically.
+`SYMBOL_MISMATCH` is the observed "reported a grep hit as a verified fact" failure. Its duplication
+with `schema.validate_record` is deliberate: a grunt can write a staging file directly, so the
+lead-side check is the only real guarantee.
+
+**Three verdicts exist because the naive implementation was demonstrably exploitable**, each found by
+review and reproduced before being fixed:
+
+- `MALFORMED` — a record of `{"symbol": "", "evidence": ""}` citing a phantom line past EOF returned
+  **PASS**, because `"" in ""` is true, `"".strip()` matches a blank line, and splitting a
+  newline-terminated file yields a trailing empty element. A wholly vacuous citation, graded verified.
+- `OUT_OF_TREE` — `root / rec["file"]` discards `root` when the record's path is absolute
+  (`Path("/repo") / "/etc/passwd"` is `Path("/etc/passwd")`). A grunt could cite `/etc/passwd:1` with
+  that file's real first line and get **PASS**.
+- `UNREADABLE` — reading with `errors="replace"` substitutes U+FFFD for undecodable bytes, so a
+  byte-accurate citation into a latin-1 source was graded **FABRICATED**. `verify` must never accuse
+  an honest grunt. When it cannot decode a file it says so, and `any_failed` counts that as a
+  failure: *the lead must never treat "could not verify" as "verified."*
+
+**`verify_record` never raises.** A grunt-authored staging file may contain anything — `null`, an int,
+a truncated object. Every record yields a `Verdict`; one bad record must not abort the batch and take
+the good records with it. `render_table` is likewise total, rendering `?` placeholders for fields a
+malformed record lacks.
+
+`OFF_BY` reports the first matching line *and the match count*: a lone `}` that matches fifty lines
+makes a bare "actual 36" misleading.
 
 The lead's context receives the **table**, not the bodies:
 
