@@ -105,6 +105,18 @@ out of `send`'s output. Never compute it.
 A mistyped flag looks like a dead grunt. If you see `2`, check your own command
 before you conclude the grunt died.
 
+### None of that applies to the tools
+
+If `team_send`, `team_wait` and `team_verify` are in your tool list, use them.
+All three traps above are properties of the shell, not of this tool: there is no
+`$?` to destroy, no argv to mistype into a collision, and `team_send` returns the
+task id rather than printing it for you to parse.
+
+`team_verify` returns `ok: false` on a bad citation. That is not an error and
+retrying it changes nothing — it is the answer. Re-ask the grunt.
+
+The grunts keep using the shell verbs. `qwen` has no MCP client.
+
 ---
 
 ## Do not do the work yourself

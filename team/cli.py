@@ -10,7 +10,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from team import bus, buildverify, collect, config, log, ops, panes, verify, wait, worktrees
+from team import (api, bus, buildverify, collect, config, log, ops, panes,
+                  verify, wait, worktrees)
 from team.config import StateError
 from team.schema import SchemaError
 
@@ -45,7 +46,7 @@ DEFAULT_SESSION = "team"
 
 
 def _roster(root: Path) -> dict:
-    return bus.read_json(bus.roster_path(root))
+    return api.roster(root)
 
 
 def _write_roster(root: Path, roster: dict) -> None:
@@ -53,10 +54,7 @@ def _write_roster(root: Path, roster: dict) -> None:
 
 
 def _pane_for(root: Path, agent: str) -> str:
-    entry = _roster(root).get(agent)
-    if not entry:
-        raise StateError(f"no agent {agent!r} in roster.json")
-    return entry["pane"]
+    return api.pane_for(root, agent)
 
 
 def _next_grunt(roster: dict) -> str:
@@ -337,38 +335,22 @@ def cmd_down(args, root, p=None):
 
 
 def cmd_send(args, root, p=None):
-    p = p if p is not None else panes.Panes()
-    pane = _pane_for(root, args.agent)
-    if not p.exists(pane):
-        print(f"pane {pane} for {args.agent} is gone", file=sys.stderr)
+    # `api.send` raises PaneError; the exit-code mapping stays here, where the
+    # other exit codes live, rather than leaking into the shared core.
+    try:
+        r = api.send(root, args.agent, question=args.question,
+                     scope=args.scope or [], supersede=args.supersede,
+                     allow_dirty=args.allow_dirty, reply=args.reply,
+                     text=args.text, kind=args.type, create=args.create,
+                     replace=args.replace, build_dir=args.build_dir,
+                     build_cmd=args.build_cmd, p=p)
+    except panes.PaneError as exc:
+        print(exc, file=sys.stderr)
         return PANE_GONE
-    # The pane exists, but a grunt spawned a moment ago may not be listening
-    # yet, and keys typed before its TUI draws are dropped silently.
-    p.wait_ready(pane)
-
-    if args.reply:
-        rid = ops.reply(root, args.agent, args.reply, args.text)
-        p.send_line(pane, f"do task {bus.task_path(root, args.agent, rid)}")
-        print(f"replied {rid} to {args.agent}")
-        return OK
-
-    if args.type == "build":
-        tid = ops.compose_build_task(
-            root, args.agent, args.question, args.create,
-            args.build_dir, args.build_cmd or list(DEFAULT_BUILD_CMD),
-            replace=args.replace)
+    if r.kind == "reply":
+        print(f"replied {r.id} to {r.agent}")
     else:
-        tid = ops.compose_task(root, args.agent, args.question, args.scope or [],
-                               supersede=args.supersede,
-                               allow_dirty=args.allow_dirty)
-    p.clear_context(pane)
-    # ABSOLUTE. The grunt's cwd is its worktree, which has no `.team/` in it --
-    # the bus lives once, in the main tree. A path relative to the main root
-    # names nothing from where the grunt is standing. Measured live: the grunt
-    # was handed `.team/inbox/grunt1/001.json`, could not open it, guessed the
-    # absolute path, and the task died there.
-    p.send_line(pane, f"do task {bus.task_path(root, args.agent, tid)}")
-    print(f"sent task {tid} to {args.agent}")
+        print(f"sent task {r.id} to {r.agent}")
     return OK
 
 
@@ -382,18 +364,14 @@ def cmd_wait(args, root):
             print(_digest(m))
         return OK
 
-    sealed, missing = wait.for_tasks(root, args.task, timeout=args.timeout)
-    # A superseded task is resolved but never seals. Reporting it as neither
-    # sealed nor timed out left `team wait` printing nothing and exiting 0.
-    superseded = [t for t in args.task
-                  if t not in sealed and t not in missing]
-    for tid in sealed:
+    r = api.wait_tasks(root, args.task, timeout=args.timeout)
+    for tid in r.sealed:
         print(f"SEALED: {tid}")
-    for tid in superseded:
+    for tid in r.superseded:
         print(f"SUPERSEDED: {tid}")
-    for tid in missing:
+    for tid in r.timed_out:
         print(f"TIMEOUT: {tid}")
-    return TIMEOUT if missing else OK
+    return OK if r.ok else TIMEOUT
 
 
 def cmd_inbox(args, root):
@@ -449,37 +427,21 @@ def _records(root: Path, tid: str) -> list[dict]:
 
 
 def cmd_verify(args, root):
-    if buildverify.is_build_task(root, args.task):
-        v = buildverify.verify_build(root, args.task)
-        print(buildverify.render(v))
-        failed = v.failed
-
-        # A build task's citations are checked too, against the worktree the
-        # grunt wrote them in. Measured on the first clean build run: the file
-        # was correct, compiled, and the grunt cited line 7 of a symbol on line
-        # 6. The compiler proves the code. Only `verify` proves the pointer.
-        # Skipped when the task-level check already failed: there is no sound
-        # tree to resolve a path against.
-        if not v.failed:
-            records = _records(root, args.task)
-            if records:
-                work = worktrees.path(root, bus.read_json(
-                    bus.snapshot_path(root, args.task))["agent"])
-                verdicts = verify.verify_records(work, records)
-                print(verify.render_table(args.task, verdicts))
-                failed = verify.any_failed(verdicts)
-        return OK if (args.lenient or not failed) else VERIFY_FAIL
-
-    payload = bus.read_json(bus.result_path(root, args.task))
-    verdicts = verify.verify_records(root, payload["records"])
-    print(verify.render_table(args.task, verdicts))
-    if args.show:
-        print(json.dumps(payload["records"], indent=2))
+    r = api.verify_task(root, args.task)
+    if r.kind == "build":
+        print(buildverify.render(r.build))
+        # No citations, or a task-level failure that left no sound tree to
+        # resolve them against: `api.verify_task` returns [] for both.
+        if r.verdicts:
+            print(verify.render_table(args.task, r.verdicts))
+    else:
+        print(verify.render_table(args.task, r.verdicts))
+        if args.show:
+            print(json.dumps(api.task_records(root, args.task), indent=2))
     # Fail closed. A lead running `team verify $t && use_result` must not
     # trust a fabricated citation because it forgot a flag. Measured grunt
     # accuracy: 2/5, 0/4, 3/4. `--lenient` is the deliberate opt-out.
-    failed = verify.any_failed(verdicts)
-    return OK if (args.lenient or not failed) else VERIFY_FAIL
+    return OK if (args.lenient or r.ok) else VERIFY_FAIL
 
 
 def build_parser() -> argparse.ArgumentParser:

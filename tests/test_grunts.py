@@ -309,9 +309,9 @@ class TaskPathTest(_Repo):
         self.p.clear_context = lambda t: self.p.calls.append(("clear_context", t))
         sent = []
         self.p.send_line = lambda t, text: sent.append(text)
-        args = type("A", (), dict(agent="grunt1", question="q", scope=None,
-                                  supersede=False, allow_dirty=False, reply=None,
-                                  type="find", text=""))()
+        # The real parser, not a hand-rolled namespace: a fixture that invents
+        # `args` drifts silently the moment `send` grows a flag.
+        args = cli.build_parser().parse_args(["send", "grunt1", "--question", "q"])
         with redirect_stdout(io.StringIO()):
             cli.cmd_send(args, self.root, p=self.p)
         self.assertEqual(len(sent), 1)
@@ -324,9 +324,9 @@ class TaskPathTest(_Repo):
         sent = []
         self.p.clear_context = lambda t: None
         self.p.send_line = lambda t, text: sent.append(text)
-        args = type("A", (), dict(agent="grunt1", question="q", scope=None,
-                                  supersede=False, allow_dirty=False, reply=None,
-                                  type="find", text=""))()
+        # The real parser, not a hand-rolled namespace: a fixture that invents
+        # `args` drifts silently the moment `send` grows a flag.
+        args = cli.build_parser().parse_args(["send", "grunt1", "--question", "q"])
         with redirect_stdout(io.StringIO()):
             cli.cmd_send(args, self.root, p=self.p)
         rel = sent[0].removeprefix("do task ")

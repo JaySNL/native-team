@@ -1,0 +1,13 @@
+#!/bin/sh
+# `team-mcp` — the MCP server, for a lead that would rather call tools than
+# drive `team` through a shell that eats its exit codes.
+#
+# Registered in a repo's `.mcp.json`, never globally: a server started in a
+# project with no `.team/` bus finds nothing and every call is an error.
+#
+# stdout is the JSON-RPC channel. Anything written there that is not a frame
+# kills the session, which is why this shim redirects nothing into it.
+set -e
+self=$(readlink -f "$0")
+repo=$(dirname "$(dirname "$self")")
+PYTHONPATH="$repo${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m team.mcp_server "$@"
