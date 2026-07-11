@@ -55,6 +55,41 @@ class BusTest(unittest.TestCase):
             with self.assertRaises(bus.BusError):
                 bus.bus_root(Path(d))
 
+    def _setenv(self, k, v):
+        old = os.environ.get(k)
+        def restore(k=k, old=old):
+            if old is None: os.environ.pop(k, None)
+            else: os.environ[k] = old
+        self.addCleanup(restore)
+        if v is None: os.environ.pop(k, None)
+        else: os.environ[k] = v
+
+    def _neutral_cwd(self):
+        """chdir into a bus-less dir; restore cwd before it is removed (LIFO)."""
+        nd = tempfile.TemporaryDirectory()
+        self.addCleanup(nd.cleanup)          # runs 2nd
+        old = os.getcwd()
+        self.addCleanup(os.chdir, old)       # runs 1st -> cwd out before rmtree
+        os.chdir(nd.name)
+
+    def test_team_root_env_starts_resolution_outside_cwd(self):
+        """`$TEAM_ROOT` lets a caller whose cwd holds no bus (e.g. the MCP server
+        in the lead's launch dir) reach a bus that lives in another tree."""
+        self._neutral_cwd()
+        self._setenv("TEAM_ROOT", None)                 # baseline: cwd walk-up fails
+        with self.assertRaises(bus.BusError):
+            bus.bus_root()
+        self._setenv("TEAM_ROOT", str(self.root))       # env points at the bus's tree
+        self.assertEqual(bus.bus_root(), self.root)
+        self.assertEqual(bus.resolve_bus_name(), ".team")
+
+    def test_explicit_start_beats_team_root(self):
+        """An explicit `start` argument is never overridden by `$TEAM_ROOT`."""
+        other = self.root / "elsewhere"
+        (other / ".team").mkdir(parents=True)
+        self._setenv("TEAM_ROOT", str(other))
+        self.assertEqual(bus.bus_root(self.root), self.root)
+
     def test_atomic_write_leaves_no_partial_file(self):
         p = self.root / "sub" / "x.json"
         bus.write_json(p, {"a": 1})

@@ -20,6 +20,20 @@ class BusError(Exception):
     pass
 
 
+def _default_start() -> Path:
+    """Where root/name resolution begins when no explicit `start` is given.
+
+    `$TEAM_ROOT` overrides cwd, so a bus can be addressed from a tree that does
+    not contain it -- e.g. the MCP server, whose cwd is the lead's launch dir and
+    not necessarily the dev repo holding `.team/`. It sets *where* to look, not
+    *which* bus (that is `$TEAM_BUS`); the two compose. An explicit `start`
+    argument always wins over it, so in-process callers that already know their
+    own root are never second-guessed. Unset -> byte-for-byte the old cwd walk-up.
+    """
+    env = os.environ.get("TEAM_ROOT")
+    return Path(env) if env else Path.cwd()
+
+
 def resolve_bus_name(cli_flag: str | None = None, start: Path | None = None) -> str:
     """The bus directory name to address, by first match:
 
@@ -56,7 +70,7 @@ def resolve_bus_name(cli_flag: str | None = None, start: Path | None = None) -> 
             )
         return env
 
-    cur = (start or Path.cwd()).resolve()
+    cur = (start or _default_start()).resolve()
     for cand in [cur, *cur.parents]:
         if BUS_DIR_RE.fullmatch(cand.name):
             return cand.name
@@ -88,8 +102,12 @@ def bus_root(start: Path | None = None) -> Path:
     Which bus is picked comes from `resolve_bus_name` (a `--bus` flag lives in
     `$TEAM_BUS` by the time we get here). With no flag and no env the resolved
     name is '.team', so this is byte-for-byte the old single-team walk-up.
+
+    Where the walk-up begins is `start`, else `$TEAM_ROOT`, else cwd -- see
+    `_default_start`. That env knob lets a caller rooted outside the bus's tree
+    (an MCP server in the lead's launch dir) still reach it.
     """
-    cur = (start or Path.cwd()).resolve()
+    cur = (start or _default_start()).resolve()
     name = resolve_bus_name(start=cur)
     for cand in [cur, *cur.parents]:
         if (cand / name).is_dir():

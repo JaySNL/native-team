@@ -77,6 +77,25 @@ exactly `.team`, byte-for-byte as before — nothing changes for a single team.
 The shared `.qwen/settings.json` is ref-counted: the first bus to `init` backs
 your real settings up, the last bus to `down` restores them.
 
+### Addressing a bus from outside its tree
+
+`$TEAM_BUS` picks *which* bus; `$TEAM_ROOT` picks *where* to start looking. Set
+it to the tree that holds the bus and resolution begins there instead of the
+current directory, so a caller whose cwd is not the bus's repo can still reach
+it. The two compose: `$TEAM_ROOT` locates the tree, `$TEAM_BUS` (or the walk-up)
+names the bus within it. An explicit path passed in code always wins over both;
+unset, resolution is the plain cwd walk-up, unchanged.
+
+The MCP server is the case that needs this: registered in `.mcp.json`, it
+inherits the lead's launch directory as its cwd, which may not be the repo that
+holds `.team/`. Give the server the tree in its `env` block:
+
+    "team": { "type": "stdio", "command": ".../bin/team-mcp",
+              "env": { "TEAM_ROOT": "/abs/path/to/repo" } }
+
+Like `$TEAM_BUS`, `$TEAM_ROOT` is read when the server spawns (session start), so
+a running server won't pick up a change until `claude` is restarted.
+
 ### Running a 2nd team via the MCP tools
 
 The `team …` CLI (via Bash) needs no reload — each call is a fresh process that
