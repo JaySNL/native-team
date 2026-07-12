@@ -224,6 +224,123 @@ class ProvisionedSettingsTest(_Repo):
         with self.assertRaises(StateError):
             config.down(self.root, wt=self.wt)
 
+    # -- provisioned-link propagation (config._provision_links) --
+
+    def _make_bank(self):
+        """An external memory-bank dir + the main tree's link to it."""
+        bank = self.root.parent / (self.root.name + "-bank")
+        bank.mkdir()
+        (bank / "MEMORY.md").write_text("# index\n")
+        (self.root / "memory").symlink_to(bank, target_is_directory=True)
+        return bank
+
+    def _make_context(self):
+        """An external context file + the main tree's link to it (the file qwen
+        autoloads via context.fileName)."""
+        ext = self.root.parent / (self.root.name + "-ctx.md")
+        ext.write_text("grunt rules\n")
+        (self.root / "TEAM_GRUNT_CONTEXT.md").symlink_to(ext)
+        return ext
+
+    def test_memory_link_propagated_to_worktree(self):
+        bank = self._make_bank()
+        config.provision(self.work, self.root)
+        link = self.work / "memory"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.resolve(), bank.resolve())
+        self.assertTrue((link / "MEMORY.md").is_file())
+
+    def test_memory_link_is_not_the_grunts_work(self):
+        self._make_bank()
+        config.provision(self.work, self.root)
+        self.assertEqual(self.wt.dirty(self.root, "grunt1"), [])
+
+    def test_memory_link_reprovision_is_idempotent(self):
+        bank = self._make_bank()
+        config.provision(self.work, self.root)
+        config.provision(self.work, self.root)          # up/add runs it again
+        self.assertEqual((self.work / "memory").resolve(), bank.resolve())
+        self.assertEqual(self.wt.dirty(self.root, "grunt1"), [])
+
+    def test_no_main_link_means_no_worktree_link(self):
+        config.provision(self.work, self.root)          # no memory in main tree
+        self.assertFalse((self.work / "memory").exists())
+        self.assertFalse((self.work / "memory").is_symlink())
+
+    def test_real_memory_dir_in_worktree_is_not_clobbered(self):
+        self._make_bank()
+        real = self.work / "memory"
+        real.mkdir()
+        (real / "keep.txt").write_text("grunt's own\n")
+        config.provision(self.work, self.root)
+        self.assertFalse((self.work / "memory").is_symlink())
+        self.assertEqual((real / "keep.txt").read_text(), "grunt's own\n")
+
+    def test_context_file_link_propagated_to_worktree(self):
+        ext = self._make_context()
+        config.provision(self.work, self.root)
+        link = self.work / "TEAM_GRUNT_CONTEXT.md"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.resolve(), ext.resolve())
+        self.assertEqual(link.read_text(), "grunt rules\n")
+
+    def test_context_file_link_is_not_the_grunts_work(self):
+        self._make_context()
+        config.provision(self.work, self.root)
+        self.assertEqual(self.wt.dirty(self.root, "grunt1"), [])
+
+    def test_both_links_provisioned_together(self):
+        self._make_bank()
+        self._make_context()
+        config.provision(self.work, self.root)
+        self.assertTrue((self.work / "memory").is_symlink())
+        self.assertTrue((self.work / "TEAM_GRUNT_CONTEXT.md").is_symlink())
+        self.assertEqual(self.wt.dirty(self.root, "grunt1"), [])
+
+
+class VerbatimAttachTest(_Repo):
+    """--attach ships the exact bytes as files the grunt copies verbatim, so a
+    literal-transcription task never routes through model reconstruction."""
+
+    def _stage_src(self, files):
+        src = self.root.parent / (self.root.name + "-attach")
+        for rel, content in files.items():
+            p = src / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        return src
+
+    def test_attach_stages_exact_bytes_into_worktree(self):
+        src = self._stage_src({"probe/C.cs": GOOD})
+        self._send(attach_dir=str(src))
+        staged = self.work / ".attach" / "probe" / "C.cs"
+        self.assertTrue(staged.is_file())
+        self.assertEqual(staged.read_text(), GOOD)
+
+    def test_attach_staging_is_not_the_grunts_work(self):
+        src = self._stage_src({"probe/C.cs": GOOD})
+        self._send(attach_dir=str(src))
+        self.assertEqual(self.wt.dirty(self.root, "grunt1"), [])
+
+    def test_attach_protocol_says_copy_not_type(self):
+        src = self._stage_src({"probe/C.cs": GOOD})
+        tid = self._send(attach_dir=str(src))
+        body = bus.read_json(bus.task_path(self.root, "grunt1", tid))["protocol"]
+        self.assertIn(".attach/", body)
+        self.assertIn("cp ", body)
+        self.assertIn("DO NOT type", body)
+
+    def test_attach_refuses_when_a_create_path_has_no_staged_file(self):
+        src = self._stage_src({"probe/C.cs": GOOD})   # D.cs deliberately absent
+        with self.assertRaises(StateError):
+            self._send(create=["probe/C.cs", "probe/D.cs"], attach_dir=str(src))
+
+    def test_no_attach_uses_the_plain_build_template(self):
+        tid = self._send()
+        body = bus.read_json(bus.task_path(self.root, "grunt1", tid))["protocol"]
+        self.assertNotIn(".attach/", body)
+        self.assertIn("BUILD IT until it compiles", body)
+
 
 class ContainmentTest(_Repo):
     def test_a_file_outside_the_declared_set_fails_containment(self):

@@ -86,6 +86,28 @@ class OpsTest(unittest.TestCase):
         sealed = bus.read_json(bus.result_path(self.root, tid))
         self.assertEqual(len(sealed["records"]), 1)
 
+    def test_build_task_seals_with_no_records(self):
+        """A build's proof is the build itself, which `verify` re-runs. A verbatim
+        --attach grunt authors nothing to cite, so `result done` must seal a build
+        with zero staged records rather than wedge it on an impossible citation.
+        Measured, task 025: the grunt copied bytes, built clean, then spiralled on
+        the seal because it was refused for want of a record it had no basis to make."""
+        tid = bus.alloc_id(self.root)
+        bus.write_json(bus.task_path(self.root, "grunt1", tid), {"kind": "build"})
+        ops.result_done(self.root, tid, "grunt1")
+        sealed = bus.read_json(bus.result_path(self.root, tid))
+        self.assertEqual(sealed["kind"], "build")
+        self.assertEqual(sealed["records"], [])
+        self.assertFalse(bus.staging_path(self.root, tid).exists())
+
+    def test_find_task_still_refuses_seal_with_no_records(self):
+        """The build exemption must not leak to find: a find with no citations
+        proved nothing, and a vacuous seal would report PASS on an empty report."""
+        tid = ops.compose_task(self.root, "grunt1", "q", [])
+        with self.assertRaises(config.StateError) as cm:
+            ops.result_done(self.root, tid, "grunt1")
+        self.assertIn("no staged records", str(cm.exception))
+
     def test_reply_requires_prior_blocked_message(self):
         tid = ops.compose_task(self.root, "grunt1", "q", [])
         with self.assertRaises(config.StateError):

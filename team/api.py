@@ -96,7 +96,7 @@ def send(root: Path, agent: str, *, question: str = "", scope=(),
          supersede: bool = False, allow_dirty: bool = False,
          reply: str | None = None, text: str = "", kind: str = "find",
          create=(), replace: bool = False, build_dir: str = ".",
-         build_cmd=None, p=None) -> SendResult:
+         build_cmd=None, attach_dir: str | None = None, p=None) -> SendResult:
     """Compose a task, clear the grunt's context, hand it the task path.
 
     Raises `panes.PaneError` if the grunt's pane is gone. The caller decides
@@ -131,7 +131,7 @@ def send(root: Path, agent: str, *, question: str = "", scope=(),
         tid = ops.compose_build_task(
             root, agent, question, list(create), build_dir,
             list(build_cmd) if build_cmd else list(DEFAULT_BUILD_CMD),
-            replace=replace)
+            replace=replace, attach_dir=attach_dir)
     else:
         tid = ops.compose_task(root, agent, question, list(scope),
                                supersede=supersede, allow_dirty=allow_dirty)

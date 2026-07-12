@@ -121,6 +121,47 @@ else fails the task.
 """
 
 
+BUILD_ATTACH_TEMPLATE = """\
+You are a grunt on a code-writing team. Work ONLY inside your worktree.
+
+TASK {tid}
+WHAT THIS IS: {question}
+
+YOUR WORKTREE -- you are already in it. Do not cd out of it:
+
+    {workdir}
+
+The exact, authoritative bytes for every file below are ALREADY staged in your
+worktree under `.attach/`, mirroring these paths:
+{create}
+
+DO NOT type these files yourself, do NOT open them in an editor, do NOT
+"improve" or reformat them, do NOT regenerate them from what you think a file
+like this should contain. Your only job is to copy the staged bytes into place,
+byte for byte. For each path P listed above, run:
+
+    mkdir -p "$(dirname "P")" && cp ".attach/P" "P"
+
+Then CHECK it compiles -- this is a check, not a licence to edit:
+
+    cd {build_dir} && {build_cmd}
+
+The staged bytes are authoritative. If the build fails, do NOT change the files
+to make it pass -- that would corrupt the exact content you were given. Stop and
+report the error instead:
+
+    team msg --blocked --task {tid} "build failed after verbatim copy: <error>"
+
+WHEN THE BUILD SUCCEEDS:
+
+    team result done --task {tid}
+
+Everything you changed is checked against the path list above. The files must
+match the staged bytes exactly; copying anything else, or editing after the
+copy, fails the task.
+"""
+
+
 def task_body(tid: str, question: str, scope: list[str]) -> str:
     scope_text = "\n".join(f"  - {s}" for s in scope) or "  (none given)"
     return TEMPLATE.format(tid=tid, question=question.strip(), scope=scope_text)
@@ -131,10 +172,11 @@ def ask_body(tid: str, question: str) -> str:
 
 
 def build_body(tid: str, question: str, workdir: str, create: list[str],
-               build_dir: str, build_cmd: list[str]) -> str:
+               build_dir: str, build_cmd: list[str], attach: bool = False) -> str:
     import shlex
     create_text = "\n".join(f"  - {c}" for c in create)
-    return BUILD_TEMPLATE.format(
+    template = BUILD_ATTACH_TEMPLATE if attach else BUILD_TEMPLATE
+    return template.format(
         tid=tid, question=question.strip(), workdir=workdir,
         create=create_text, build_dir=build_dir,
         build_cmd=" ".join(shlex.quote(a) for a in build_cmd),

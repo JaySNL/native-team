@@ -231,10 +231,19 @@ def result_done(root: Path, tid: str, agent: str) -> str:
 
     kind = task_kind(root, agent, tid)
     staging = bus.staging_path(root, tid)
+    # A build task's proof is the build itself -- `verify` re-runs it. Citations
+    # into the built file are optional, and for a verbatim --attach task there is
+    # nothing authored to cite, so the grunt can never stage a record. Let a build
+    # seal on the build alone, with no staging file at all. find/ask still must
+    # stage their evidence: a find with no citations proved nothing. (Measured: a
+    # temp-0 grunt copied bytes, built clean, then spiralled -- it was told to
+    # `result done`, which refused for want of a citation it had no basis to make.)
     if not staging.exists():
-        raise StateError(_nothing_to_seal(tid, kind))
-
-    payload = _read_staging(staging)
+        if kind != "build":
+            raise StateError(_nothing_to_seal(tid, kind))
+        payload = {"records": []}
+    else:
+        payload = _read_staging(staging)
     answer = payload.get("answer")
     records = payload.get("records") or []
 
@@ -257,7 +266,7 @@ def result_done(root: Path, tid: str, agent: str) -> str:
                 f"with `team result add`, or post it with "
                 f"`team msg --note --task {tid} \"...\"`."
             )
-        if not records:
+        if kind == "find" and not records:
             raise StateError(_nothing_to_seal(tid, kind))
 
     # Re-validate even though result_add already validated each record on the
@@ -271,11 +280,15 @@ def result_done(root: Path, tid: str, agent: str) -> str:
     # Seal before announce: the lead must never wake to a result that
     # does not yet exist on disk.
     bus.write_json(bus.result_path(root, tid), payload)
-    staging.unlink()
+    if staging.exists():
+        staging.unlink()
 
     if kind == "ask":
         return post_message(root, agent, "result", tid,
                             f"answer sealed; read it with `team answer {tid}`")
+    if kind == "build" and not records:
+        return post_message(root, agent, "result", tid,
+                            f"build sealed; run `team verify {tid}`")
     return post_message(root, agent, "result", tid,
                         f"{len(records)} record(s) sealed; run `team verify {tid}`")
 
@@ -305,7 +318,7 @@ def _porcelain(root: Path, agent: str, wt) -> list[str]:
 def compose_build_task(root: Path, agent: str, question: str,
                        create: list[str], build_dir: str,
                        build_cmd: list[str], replace: bool = False,
-                       wt=None) -> str:
+                       attach_dir: str = None, wt=None) -> str:
     """Dispatch a task that writes code, and record what it was allowed to write.
 
     The snapshot is written *before* the task is announced, so it is the lead's
@@ -372,6 +385,29 @@ def compose_build_task(root: Path, agent: str, question: str,
             target.unlink()
         resolved.append(rel)
 
+    # Verbatim-attach: the lead ships the exact bytes as files under attach_dir,
+    # mirroring the create paths, and the grunt copies them into place instead
+    # of retyping them. This is the fix for the measured failure where the
+    # agentic harness pulls a small model back to an idiomatic-template prior on
+    # a literal-transcription task -- routing the bytes through a shell `cp`
+    # bypasses model reconstruction entirely. Staged under `.attach/` (a
+    # PROVISIONED path, so containment does not read it as the grunt's work).
+    if attach_dir is not None:
+        import shutil
+        src_root = Path(attach_dir).resolve()
+        stage_root = work / ".attach"
+        for rel in resolved:
+            src = src_root / rel
+            if not src.is_file():
+                raise StateError(
+                    f"--attach given but no staged file for --create path {rel} "
+                    f"(looked for {src}). Every create path needs its exact bytes "
+                    f"under the attach dir, mirroring the same relative path."
+                )
+            dst = stage_root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
     tid = bus.alloc_id(root)
     bus.write_json(bus.snapshot_path(root, tid), {
         "task": tid,
@@ -389,6 +425,7 @@ def compose_build_task(root: Path, agent: str, question: str,
         "question": question,
         "scope": [],
         "protocol": protocol.build_body(
-            tid, question, str(work), resolved, build_dir, build_cmd),
+            tid, question, str(work), resolved, build_dir, build_cmd,
+            attach=attach_dir is not None),
     })
     return tid

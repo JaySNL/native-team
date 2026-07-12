@@ -5,17 +5,16 @@ description: Use when the user asks to start a TeamChat / grunt team / multi-ter
 
 # teamup
 
-Start the native agent team in the current directory, and become its lead.
+Start native agent team in current dir. Become lead.
 
-`team` is a real CLI. It is not a metaphor for subagents, and it is not a
-workflow. It spawns `qwen` processes in tmux panes beside you, hands them tasks
-through a file bus, and **mechanically verifies every code citation they return.**
+`team` = real CLI. Not metaphor for subagents, not workflow. Spawns `qwen`
+processes in tmux panes beside you, hands tasks via file bus, **mechanically
+verifies every code citation they return.**
 
 ## Do this, in order
 
-**1. Check you are in tmux.** `echo $TMUX_PANE` must print something like `%17`.
-If it is empty, stop and tell the user: this needs a tmux session, because a
-grunt is a pane.
+**1. Check tmux.** `echo $TMUX_PANE` must print like `%17`. Empty → stop, tell
+user: needs tmux session, grunt = pane.
 
 **2. Bootstrap.**
 
@@ -23,33 +22,45 @@ grunt is a pane.
 team bootstrap
 ```
 
-If `team: command not found`, tell the user to run:
+`team: command not found` → tell user:
 `ln -s <path-to>/native-team/bin/team ~/.local/bin/team`
 
-`bootstrap` is idempotent. It creates the git repo and first commit if the
-directory has neither, writes the bus, registers **your** pane as the lead, and
-spawns no grunts. It refuses if the directory sits inside another git repo.
+Idempotent. Creates git repo + first commit if none, writes bus, registers
+**your** pane as lead, spawns no grunts. Refuses if dir inside another git repo.
 
-It will warn that your own `qwen` in this repo now runs in YOLO mode without its
-context files. That is true, and `team down` undoes it.
+Warns your own `qwen` in this repo now runs YOLO without context files. True.
+`team down` undoes.
 
-**3. Read your ground rules.** Run `team brief` to get the path, then read that
-file. It is the contract: the verbs, the exit codes, the one rule, and the three
-traps. Do not skip it and do not summarise it from memory — it is measured, and
-it changes.
+**2a. Give grunts the memory bank (if project has one).** Grunt starts every
+task with zero project memory — none of your accumulated learnings. Repo has a
+Claude memory bank → symlink at repo **root** as `memory`, once:
 
-**4. Report to the user** what came up: the lead pane id, and that they have no
-grunts yet.
+```bash
+ln -s <abs-path-to>/memory memory   # e.g. ~/.claude/projects/<slug>/memory
+grep -qxF memory .gitignore || echo memory >> .gitignore
+```
+
+`config.provision` propagates this link into **every** grunt worktree on each
+`grunt add`/`worktree up` → survives worktree teardown. That persistence = why
+link lives in main tree, not a worktree. Grunt whose task points at `memory/…`
+reads same bank you do. No main-tree link → grunts get no `memory/`; nothing
+else changes.
+
+**3. Read ground rules.** Run `team brief` for the path, read that file. It =
+the contract: verbs, exit codes, one rule, three traps. Don't skip, don't
+summarise from memory — measured, changes.
+
+**4. Report to user:** lead pane id, no grunts yet.
 
 ## Then
 
-Spawn a grunt when a task needs one:
+Spawn grunt when task needs one:
 
 ```bash
 team grunt add
 ```
 
-Everything after that is in the brief. Follow it, especially:
+Rest in brief. Follow it, especially:
 
 > A grunt's citation is not a fact until `team verify` has exited `0` on it.
 
@@ -57,6 +68,6 @@ and
 
 > Do not do the work yourself.
 
-The entire point is that reading a large codebase does not happen in **your**
-context window. The moment you open the file the grunt was sent to read, that
-saving is gone and you have paid for the grunt as well.
+Point: reading a big codebase must not happen in **your** context window. Moment
+you open the file the grunt was sent to read, that saving gone — you paid for
+the grunt too.

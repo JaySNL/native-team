@@ -29,12 +29,20 @@ WORK = "work"
 # work: containment must not blame the grunt for them, `down` must not refuse
 # teardown over them, and `collect` never copies them out. A grunt rewriting its
 # own `.qwen/` is inside its own fence -- it changes nothing outside the
-# worktree, so this exemption is not a hole in containment.
-PROVISIONED = (".qwen/",)
+# worktree, so this exemption is not a hole in containment. `memory` and
+# `TEAM_GRUNT_CONTEXT.md` are the symlinks `config.provision` drops in to give
+# the grunt the lead's memory bank and its autoloaded context file; they point
+# OUTSIDE the worktree, but the grunt cannot create them (no write tool reaches a
+# symlink) and containment must not read their targets as the grunt's own output.
+PROVISIONED = (".qwen/", "memory", "TEAM_GRUNT_CONTEXT.md", ".attach/")
 
 
 def is_provisioned(rel: str) -> bool:
-    return any(rel.startswith(prefix) for prefix in PROVISIONED)
+    # A dir prefix (`.qwen/`) matches anything beneath it; a bare name
+    # (`memory`, the symlink) matches only itself or paths under it -- never a
+    # sibling like `memory_notes.md`.
+    return any(rel == p or rel.startswith(p if p.endswith("/") else p + "/")
+               for p in PROVISIONED)
 
 
 def porcelain_rel(line: str) -> str:

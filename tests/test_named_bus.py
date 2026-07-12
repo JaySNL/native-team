@@ -127,13 +127,13 @@ class NamedBusCliTest(unittest.TestCase):
         # the SECOND init must not clobber the backup the first one made
         self.assertEqual(json.loads(self.backup().read_text()), {"mine": True})
         # and the shared settings.json is our grunt config while a bus is live
-        self.assertEqual(json.loads(self.qwen().read_text()), config.GRUNT_SETTINGS)
+        self.assertEqual(json.loads(self.qwen().read_text()), config.grunt_settings())
 
     def test_backup_made_once_and_not_when_no_prior_settings(self):
         # no user settings.json: first init creates ours fresh, no backup file
         _run(self.root, "init", "--bus", "auth")
         self.assertFalse(self.backup().exists())
-        self.assertEqual(json.loads(self.qwen().read_text()), config.GRUNT_SETTINGS)
+        self.assertEqual(json.loads(self.qwen().read_text()), config.grunt_settings())
         self._reset_env()
         _run(self.root, "init", "--bus", "ui")
         self.assertFalse(self.backup().exists())
@@ -166,7 +166,7 @@ class NamedBusCliTest(unittest.TestCase):
         self.assertFalse((self.root / ".team-auth").exists())
         self.assertTrue((self.root / ".team-ui").exists())
         self.assertTrue(self.backup().exists())
-        self.assertEqual(json.loads(self.qwen().read_text()), config.GRUNT_SETTINGS)
+        self.assertEqual(json.loads(self.qwen().read_text()), config.grunt_settings())
 
         # down the last bus: the user's original settings come back, backup gone
         self._reset_env()

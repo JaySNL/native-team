@@ -17,6 +17,8 @@ re-derives the repo boundary via `bus.repo_root` before allowing anything to
 be removed. Do not call `shutil.rmtree` on a bus path anywhere else in this
 module without going through that guard first.
 """
+import copy
+import os
 import shutil
 from pathlib import Path
 
@@ -43,7 +45,126 @@ GRUNT_SETTINGS = {
         "computerUse": {"enabled": False},
         "excludeTools": ["write_file", "replace", "edit", "save_memory", "web_fetch"],
     },
+    # A grunt with auto-skill ON mines its OWN session for "reusable skills" after a
+    # tool-heavy task, then wedges the pane on a keep/discard review modal (the bus
+    # times out waiting for a prompt that never returns). Worse, the skills it writes
+    # codify its failure modes as doctrine (measured: an auto-skill told the grunt to
+    # write "placeholder content for assets", to `dotnet build` — which the never-build
+    # rule forbids — and to "remove external references" when deps don't resolve, which
+    # is exactly how a plugin csproj gets gutted to a net472 stub). Off at the source.
+    "memory": {"enableAutoSkill": False},
+    # A grunt is a code transcriber/finder; it never needs the user's animation
+    # (hyperframes*) or media-authoring skills. qwen renders only a skill's
+    # name+description into the always-present available-skills block and loads
+    # the body on invocation -- so the standing cost of leaving these in is small,
+    # but a confused grunt can still *invoke* one and pull ~18k tokens of body it
+    # will never use. `skills.disabled` (matched case-insensitively by name)
+    # drops them from the block entirely and makes them un-invocable. This is the
+    # worktree's workspace settings layer, so the exclusion is grunt-only: the
+    # user's own qwen, reading its own ~/.qwen/settings.json, keeps them.
+    "skills": {"disabled": [
+        "hyperframes", "hyperframes-animation", "hyperframes-cli",
+        "hyperframes-core", "hyperframes-creative", "hyperframes-keyframes",
+        "hyperframes-registry", "media-use",
+    ]},
+    # Grunt-scoped model regime. This is the worktree's workspace settings layer,
+    # so these override the user's own ~/.qwen for grunts only.
+    #
+    # `name` pins coder30. A grunt is a transcriber/finder/scaffolder; it must not
+    # drift onto whatever model the user last selected for their interactive qwen
+    # (measured this session: the user switched their default to run a capacity
+    # test, and every grunt would have silently followed).
+    #
+    # `sessionTokenLimit` is a hard prompt-token ceiling: qwen refuses ("start a
+    # new session") instead of shipping a 200k+ prompt at the MLX server and OOMing
+    # it (the 3.6-35B melts on ~47k already). A grunt clears context per task, so a
+    # legitimate task never approaches this; it only catches a runaway read.
+    #
+    # `maxWallTimeSeconds` is the runaway guard -- a hung pane frees itself at 15
+    # minutes rather than sitting until the bus times out. `maxSessionTurns` is -1
+    # (qwen's "unlimited"): a turn cap is redundant with wall-time + qwen's own
+    # loop detection + the lead's bus wait-timeout, and measured, it only ever
+    # false-killed real work -- a legit find over 5 files burned dozens of
+    # model<->tool turns and a tight cap (30) cut it off mid-task. Bound the clock,
+    # not the turn count.
+    #
+    # NOTE deliberately NOT setting `model.generationConfig` here: with an active
+    # modelProvider (the user's openai block), qwen IGNORES top-level
+    # generationConfig fields and only warns. Temperature=0 for grunt determinism
+    # is therefore set where it is honored -- as `extra_body.temperature` on the
+    # coder30/3.6-35B provider entries in ~/.qwen/settings.json, which the openai
+    # adapter deep-merges into the request body last (so it beats the harness's
+    # default 0.70). Greedy is strictly correct for verbatim-copy/precise-edit/
+    # scaffold work and mlx-serve applies no repetition penalty, so temp>0 is pure
+    # downside. The grunt inherits that provider config through the settings merge.
+    "model": {
+        "name": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit-dwq-v2",
+        "sessionTokenLimit": 200000,
+        "maxSessionTurns": -1,
+        "maxWallTimeSeconds": 900,
+    },
 }
+
+# Defaults live in GRUNT_SETTINGS above (the probe-derived, pinned payload).
+# grunt_settings() reproduces it byte-for-byte when the environment is unset, and
+# only overrides fields for which a TEAM_GRUNT_* variable is present -- so the
+# author's own rig (model pinned, provider in ~/.qwen) is unchanged, while a
+# downloader can retarget the grunt at any OpenAI-compatible server without
+# editing this file.
+GRUNT_CONTEXT_WINDOW_DEFAULT = 262144
+# The provider's `envKey` names an environment variable; the key itself is never
+# stored in settings.json or the repo. _grunt_env (cli.py) exports this same name
+# into the grunt pane so qwen can resolve it.
+GRUNT_API_KEY_ENV = "TEAM_GRUNT_API_KEY"
+
+
+def grunt_settings(env: dict | None = None) -> dict:
+    """The `.qwen/settings.json` payload for a grunt (and the lead repo on init).
+
+    Built fresh from `env` (default `os.environ`) each call. With no TEAM_GRUNT_*
+    variables set it equals GRUNT_SETTINGS exactly, so every provenance check and
+    pinned test still holds and the author's setup is untouched. Pass `env={}` in
+    tests for the pure defaults regardless of the caller's shell.
+
+    Overrides (all optional):
+      TEAM_GRUNT_MODEL                grunt model name
+      TEAM_GRUNT_SESSION_TOKEN_LIMIT  hard prompt-token ceiling
+      TEAM_GRUNT_WALL_SECONDS         runaway wall-clock guard (seconds)
+      TEAM_GRUNT_BASE_URL             if set, an OpenAI-compatible provider block
+                                      is written so the grunt is self-contained;
+                                      unset, the grunt uses the user's own ~/.qwen
+                                      provider (original behavior, no extra key).
+      TEAM_GRUNT_CONTEXT_WINDOW       provider context window (only with a base url)
+    """
+    env = os.environ if env is None else env
+    s = copy.deepcopy(GRUNT_SETTINGS)
+
+    model = env.get("TEAM_GRUNT_MODEL")
+    if model:
+        s["model"]["name"] = model
+    if env.get("TEAM_GRUNT_SESSION_TOKEN_LIMIT"):
+        s["model"]["sessionTokenLimit"] = int(env["TEAM_GRUNT_SESSION_TOKEN_LIMIT"])
+    if env.get("TEAM_GRUNT_WALL_SECONDS"):
+        s["model"]["maxWallTimeSeconds"] = int(env["TEAM_GRUNT_WALL_SECONDS"])
+
+    base_url = env.get("TEAM_GRUNT_BASE_URL")
+    if base_url:
+        # temperature 0 as extra_body: it is honored under an active provider
+        # (top-level generationConfig is ignored there). Greedy is correct for
+        # verbatim-copy / precise-edit / scaffold work.
+        name = s["model"]["name"]
+        s["modelProviders"] = {"openai": [{
+            "id": name,
+            "name": name,
+            "baseUrl": base_url,
+            "envKey": GRUNT_API_KEY_ENV,
+            "generationConfig": {
+                "contextWindowSize": int(
+                    env.get("TEAM_GRUNT_CONTEXT_WINDOW", GRUNT_CONTEXT_WINDOW_DEFAULT)),
+                "extra_body": {"temperature": 0},
+            },
+        }]}
+    return s
 
 
 class StateError(Exception):
@@ -169,7 +290,7 @@ def init(root: Path, force: bool = False, wt=None) -> list[str]:
         # overwrote -- that is what makes repeated --force idempotent and
         # keeps us from re-copying our own output over the *real* backup.
         created = prior_meta["created_qwen_settings"]
-    elif settings.exists() and bus._try_read_obj(settings) == GRUNT_SETTINGS:
+    elif settings.exists() and bus._try_read_obj(settings) == grunt_settings():
         # Provenance was lost -- someone removed .team by hand instead of
         # running `team down`. But the file on disk is byte-for-byte our own
         # GRUNT_SETTINGS, so it cannot be user content. Treat it as ours, or
@@ -187,7 +308,7 @@ def init(root: Path, force: bool = False, wt=None) -> list[str]:
                 )
             shutil.copy2(settings, backup)
 
-    bus.write_json(settings, GRUNT_SETTINGS)
+    bus.write_json(settings, grunt_settings())
     bus.write_json(team / "init.json", {"created_qwen_settings": created})
     _update_gitignore(root)
 
@@ -202,18 +323,61 @@ def init(root: Path, force: bool = False, wt=None) -> list[str]:
     ]
 
 
-def provision(work: Path) -> Path:
+# Out-of-tree things the lead exposes at its repo root that a grunt needs but a
+# detached-HEAD worktree does not inherit, because they are (and must be)
+# uncommitted: the Claude project memory bank (`memory/`, a directory) and the
+# context file qwen autoloads via `context.fileName` (`TEAM_GRUNT_CONTEXT.md`, a
+# file -- the grunt's behavioural rules and pointer into the bank). Both are
+# re-linked into the worktree on every provision, so they survive worktree
+# teardown; without them a grunt starts every task blind.
+PROVISIONED_LINKS = ("memory", "TEAM_GRUNT_CONTEXT.md")
+
+
+def provision(work: Path, root: Path | None = None) -> Path:
     """Write the grunt settings into a worktree, whose git root -- and so whose
     qwen project root -- is the worktree itself.
 
     Called by `worktree up`, before any `send` snapshots the tree, so the file
     is already there when containment takes its baseline. `worktrees.dirty`
     filters `PROVISIONED` regardless, so ordering is belt and braces.
+
+    When `root` is given, also propagates the main tree's `PROVISIONED_LINKS`
+    (see `_provision_links`).
     """
     settings = work / ".qwen" / "settings.json"
     settings.parent.mkdir(parents=True, exist_ok=True)
-    bus.write_json(settings, GRUNT_SETTINGS)
+    bus.write_json(settings, grunt_settings())
+    if root is not None:
+        _provision_links(root, work)
     return settings
+
+
+def _provision_links(root: Path, work: Path) -> None:
+    """Re-create, inside the worktree, each `PROVISIONED_LINKS` entry the main
+    tree exposes -- so a grunt sees the same memory bank and context file the
+    lead does. Runs before the pane launches, so qwen reads the context file at
+    boot.
+
+    Each link points at the main entry's *resolved absolute* target, never a
+    copied-verbatim relative target -- one that resolves from the repo root
+    would break two directories deeper in `.team/work/<agent>`. Idempotent, and
+    never clobbers a real file/dir a grunt happens to have under that name.
+    """
+    for name in PROVISIONED_LINKS:
+        src = root / name
+        if not src.is_symlink() and not src.exists():
+            continue
+        target = src.resolve()
+        if not target.exists():
+            continue
+        link = work / name
+        if link.is_symlink():
+            if link.resolve() == target:
+                continue
+            link.unlink()
+        elif link.exists():
+            continue  # a real file/dir of that name in the worktree -- leave it
+        link.symlink_to(target, target_is_directory=target.is_dir())
 
 
 def _refuse_if_uncollected(root: Path, wt, force: bool) -> None:
@@ -309,7 +473,7 @@ def down(root: Path, force: bool = False, wt=None, killer=None) -> list[str]:
         actions.append(f"restored {settings} from backup")
     elif settings.exists() and (
             meta.get("created_qwen_settings")
-            or bus._try_read_obj(settings) == GRUNT_SETTINGS):
+            or bus._try_read_obj(settings) == grunt_settings()):
         # Last bus out, no backup: the user had no settings.json, so the one on
         # disk is our own GRUNT_SETTINGS. `meta` covers the single-bus case; the
         # content check also catches a multi-bus teardown where the bus that

@@ -1,4 +1,6 @@
+import copy
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -37,8 +39,61 @@ class ConfigTest(unittest.TestCase):
                 "computerUse": {"enabled": False},
                 "excludeTools": ["write_file", "replace", "edit", "save_memory", "web_fetch"],
             },
+            "memory": {"enableAutoSkill": False},
+            "skills": {"disabled": [
+                "hyperframes", "hyperframes-animation", "hyperframes-cli",
+                "hyperframes-core", "hyperframes-creative", "hyperframes-keyframes",
+                "hyperframes-registry", "media-use",
+            ]},
+            "model": {
+                "name": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit-dwq-v2",
+                "sessionTokenLimit": 200000,
+                "maxSessionTurns": -1,
+                "maxWallTimeSeconds": 900,
+            },
         }
         self.assertEqual(config.GRUNT_SETTINGS, expected)
+
+    # -- grunt_settings(): env decoupling, defaults preserve the constant --
+
+    def test_grunt_settings_defaults_equal_constant(self):
+        # Empty env -> byte-for-byte the pinned constant, so the author's rig and
+        # every provenance check are untouched when no TEAM_GRUNT_* is set.
+        self.assertEqual(config.grunt_settings(env={}), config.GRUNT_SETTINGS)
+        self.assertNotIn("modelProviders", config.grunt_settings(env={}))
+
+    def test_grunt_settings_model_and_caps_override(self):
+        s = config.grunt_settings(env={
+            "TEAM_GRUNT_MODEL": "ollama/qwen3-coder:30b",
+            "TEAM_GRUNT_SESSION_TOKEN_LIMIT": "64000",
+            "TEAM_GRUNT_WALL_SECONDS": "600",
+        })
+        self.assertEqual(s["model"]["name"], "ollama/qwen3-coder:30b")
+        self.assertEqual(s["model"]["sessionTokenLimit"], 64000)
+        self.assertEqual(s["model"]["maxWallTimeSeconds"], 600)
+        # no base url -> still no provider block
+        self.assertNotIn("modelProviders", s)
+
+    def test_grunt_settings_base_url_writes_self_contained_provider(self):
+        s = config.grunt_settings(env={
+            "TEAM_GRUNT_MODEL": "qwen3-coder:30b",
+            "TEAM_GRUNT_BASE_URL": "http://localhost:11434/v1",
+            "TEAM_GRUNT_CONTEXT_WINDOW": "40960",
+        })
+        prov = s["modelProviders"]["openai"][0]
+        self.assertEqual(prov["id"], "qwen3-coder:30b")
+        self.assertEqual(prov["name"], "qwen3-coder:30b")
+        self.assertEqual(prov["baseUrl"], "http://localhost:11434/v1")
+        # envKey names an env var, never the key itself
+        self.assertEqual(prov["envKey"], config.GRUNT_API_KEY_ENV)
+        self.assertEqual(prov["generationConfig"]["contextWindowSize"], 40960)
+        # temperature 0 for grunt determinism, as honored extra_body
+        self.assertEqual(prov["generationConfig"]["extra_body"]["temperature"], 0)
+
+    def test_grunt_settings_does_not_mutate_constant(self):
+        before = copy.deepcopy(config.GRUNT_SETTINGS)
+        config.grunt_settings(env={"TEAM_GRUNT_MODEL": "x", "TEAM_GRUNT_BASE_URL": "http://h/v1"})
+        self.assertEqual(config.GRUNT_SETTINGS, before)
 
     # -- init: bus tree --
 
@@ -52,7 +107,11 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(bus.read_json(self.root / ".team" / "roster.json"), {})
 
     def test_init_writes_full_grunt_settings(self):
-        config.init(self.root)
+        # Pin the exact written payload under a clean env, so a developer who has
+        # exported TEAM_GRUNT_* does not turn this drift-guard into a false red.
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("TEAM_GRUNT_")}
+        with patch.dict(os.environ, clean, clear=True):
+            config.init(self.root)
         got = json.loads(self.qwen().read_text())
         expected = {
             "context": {"fileName": ["TEAM_GRUNT_CONTEXT.md"]},
@@ -60,6 +119,18 @@ class ConfigTest(unittest.TestCase):
                 "approvalMode": "yolo",
                 "computerUse": {"enabled": False},
                 "excludeTools": ["write_file", "replace", "edit", "save_memory", "web_fetch"],
+            },
+            "memory": {"enableAutoSkill": False},
+            "skills": {"disabled": [
+                "hyperframes", "hyperframes-animation", "hyperframes-cli",
+                "hyperframes-core", "hyperframes-creative", "hyperframes-keyframes",
+                "hyperframes-registry", "media-use",
+            ]},
+            "model": {
+                "name": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit-dwq-v2",
+                "sessionTokenLimit": 200000,
+                "maxSessionTurns": -1,
+                "maxWallTimeSeconds": 900,
             },
         }
         self.assertEqual(got, expected)

@@ -77,9 +77,16 @@ def _grunt_env() -> dict:
     would find the right bus on its own -- but a grunt that `cd`s elsewhere, or a
     tool that runs `team` from a different directory, must still land on this
     team's bus, so it is pinned explicitly.
+
+    `TEAM_GRUNT_API_KEY` (default `local`) is exported so a grunt whose
+    `.qwen/settings.json` names it as a provider `envKey` (written by
+    `config.grunt_settings` when `TEAM_GRUNT_BASE_URL` is set) can resolve it.
+    Local servers ignore the value but qwen requires the variable to be present;
+    the key is never stored in a file.
     """
     return {"PATH": f"{TEAM_BIN.parent}{os.pathsep}{os.environ.get('PATH', '')}",
-            "TEAM_BUS": bus.resolve_bus_name()}
+            "TEAM_BUS": bus.resolve_bus_name(),
+            config.GRUNT_API_KEY_ENV: os.environ.get(config.GRUNT_API_KEY_ENV, "local")}
 
 
 def _digest(msg: dict) -> str:
@@ -125,7 +132,7 @@ def cmd_worktree_up(args, root):
         if agent == "lead":
             continue
         work = worktrees.path(root, agent) if agent in existing else wt.add(root, agent)
-        config.provision(work)
+        config.provision(work, root)
         if agent not in existing:
             print(f"worktree for {agent}: {work}")
             made += 1
@@ -145,7 +152,7 @@ def _grunt_worktree(root, name, wt, notes):
         notes.append(f"warning: no worktree for {name} ({exc}). "
                      f"find tasks work; build tasks will refuse.")
         return root
-    config.provision(work)
+    config.provision(work, root)
     return work
 
 
@@ -358,7 +365,7 @@ def cmd_send(args, root, p=None):
                      allow_dirty=args.allow_dirty, reply=args.reply,
                      text=args.text, kind=args.type, create=args.create,
                      replace=args.replace, build_dir=args.build_dir,
-                     build_cmd=args.build_cmd, p=p)
+                     build_cmd=args.build_cmd, attach_dir=args.attach, p=p)
     except panes.PaneError as exc:
         print(exc, file=sys.stderr)
         return PANE_GONE
@@ -582,6 +589,10 @@ def build_parser() -> argparse.ArgumentParser:
     # ["dotnet","build",...,"make"]. Same trap as `--task` once had.
     p.add_argument("--build-cmd", action="extend", nargs="+", dest="build_cmd",
                    default=None, help="build: argv, never a shell string")
+    p.add_argument("--attach", default=None, dest="attach", metavar="DIR",
+                   help="build: a dir mirroring the --create paths with their "
+                        "exact bytes; the grunt copies them verbatim instead of "
+                        "retyping (bypasses model reconstruction)")
     p.add_argument("text", nargs="?", default="")
     p.set_defaults(fn=cmd_send)
 
