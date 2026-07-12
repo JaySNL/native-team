@@ -46,7 +46,7 @@ grunt at mlx-serve, ollama, or anything OpenAI-compatible).
     team send grunt1 --question "Where is X defined?" --scope src/A.cs
     team wait --task 001 --timeout 600                 # background this from the lead
     team verify 001                                    # re-reads every cited line; exit 1 on any FAIL
-    team down                                          # restore .qwen/settings.json, remove the bus
+    team down                                          # remove the bus runtime; project .qwen stays
 
 Install once:
 
@@ -114,8 +114,10 @@ teams from two shells in the same checkout:
 Resolution order, first match wins: `--bus <slug>` flag → `$TEAM_BUS` → the
 nearest `.team`/`.team-*` ancestor → `.team`. With no flag and no env it is
 exactly `.team`, byte-for-byte as before — nothing changes for a single team.
-The shared `.qwen/settings.json` is ref-counted: the first bus to `init` backs
-your real settings up, the last bus to `down` restores them.
+The project's `.qwen/settings.json` is project-owned: `init` writes it once (on
+consent, copying your `~/.qwen` provider in so grunts are self-contained), and
+`down` leaves it in place. The first `init` snapshots any pre-existing user
+`.qwen/settings.json` to `.qwen/settings.json.team-backup` for manual recovery.
 
 ### Addressing a bus from outside its tree
 
@@ -153,9 +155,11 @@ won't reach it, even through a `/mcp` reconnect:
 
 ## Two things to know before you run it
 
-- **`team init` changes your repo.** It writes `.qwen/settings.json`, which puts your own `qwen` in
-  that repo into YOLO mode with no `CLAUDE.md` context until `team down` restores it. The `init`
-  output says so.
+- **`team init` writes this project's `.qwen/settings.json`.** It puts your own `qwen` in this repo
+  into YOLO grunt mode with no `CLAUDE.md` context. On consent (`--copy-provider`) it copies your
+  `~/.qwen` model provider in, so grunts are self-contained and the config **lives in the project**
+  (edit it to retarget the model); it never writes your global `~/.qwen`. `team down` leaves this
+  file in place. The `init` output says so.
 - **The grunt's shell is unrestricted.** qwen ignores `coreTools` allowlists — a probe confirmed
   `echo SHELL_RAN` ran despite an allowlist scoped to `team` only. `excludeTools` removes the write
   tools, but a grunt can still mutate files via shell (`sed -i`). This is a recorded, accepted risk,

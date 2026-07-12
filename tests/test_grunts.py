@@ -347,11 +347,20 @@ class BootstrapTest(unittest.TestCase):
         self.env = mock.patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%1"})
         self.env.start()
         self.addCleanup(self.env.stop)
+        # Hermetic: bootstrap goes through the cli consent gate, which reads the
+        # real ~/.qwen via Path.home() (survives an environ clear -- pwd fallback).
+        # Point it at an empty home so there is no provider to consent about.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        hp = mock.patch.object(Path, "home", return_value=Path(self._home.name))
+        hp.start()
+        self.addCleanup(hp.stop)
 
     def _boot(self, root=None, grunts=0, force=False, here=False):
         args = type("A", (), dict(grunts=grunts, session="s", lead_pane=None,
                                   force=force, timeout=1.0, command="sh",
-                                  lead_command="sh", here=here))()
+                                  lead_command="sh", here=here,
+                                  copy_provider=False, skip_copy=False))()
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             return cli.cmd_bootstrap(args, root or self.root, p=self.p)
 

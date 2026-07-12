@@ -57,7 +57,11 @@ class EndToEndTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
-        self.env = _env()
+        # Hermetic HOME: the scripted grunt needs no real provider, and `team init`
+        # would otherwise refuse (consent gate sees the dev's real ~/.qwen provider).
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.env = dict(_env(), HOME=self._home.name)
 
         self._git("init", "-q")
         (self.root / "bed.py").write_text(
@@ -275,11 +279,12 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(died["from"], "grunt1")
         self.assertEqual(died["task"], "pane-died")
 
-        # -- 8. team down --
+        # -- 8. team down: tears down the bus runtime, leaves the project .qwen --
         down = self._team("down")
         self.assertEqual(down.returncode, 0, down.stderr)
         self.assertFalse(bus.team_dir(self.root).exists())
-        self.assertFalse((self.root / ".qwen" / "settings.json").exists())
+        # the project settings are project-owned and persist across down
+        self.assertTrue((self.root / ".qwen" / "settings.json").exists())
 
 
 if __name__ == "__main__":
@@ -313,7 +318,12 @@ class TeamUpRosterTest(unittest.TestCase):
             ["tmux", "kill-session", "-t", self.session],
             stderr=subprocess.DEVNULL, check=False))
         self.repo = Path(__file__).resolve().parent.parent
-        self.env = dict(os.environ, FORCE_COLOR="3", PYTHONPATH=str(self.repo))
+        # Hermetic HOME: no real provider needed here, and `team init`/`bootstrap`
+        # would otherwise refuse when the dev's real ~/.qwen has a provider.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.env = dict(os.environ, FORCE_COLOR="3", PYTHONPATH=str(self.repo),
+                        HOME=self._home.name)
         self.env.pop("TMUX", None)          # `up` must create its own session
         self.env.pop("TMUX_PANE", None)
 

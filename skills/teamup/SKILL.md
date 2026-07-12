@@ -16,11 +16,24 @@ verifies every code citation they return.**
 **1. Check tmux.** `echo $TMUX_PANE` must print like `%17`. Empty → stop, tell
 user: needs tmux session, grunt = pane.
 
-**2. Bootstrap.**
+**2. Bootstrap.** First settle the grunt's model provider (one-time consent).
+
+Grunts run a local CLI (qwen), and its config lives IN THIS PROJECT'S `.qwen/`, not
+your global `~/.qwen`. If `~/.qwen` has a provider configured, **ASK the user**:
+copy it into this project so grunts are self-contained (recommended — it then lives
+in the project; the user can retarget the model by editing the project `.qwen`), or
+skip and configure the project `.qwen` themselves. Bootstrap with the matching flag:
 
 ```bash
-team bootstrap
+team bootstrap --copy-provider   # yes: copy your ~/.qwen provider into the project
+# or
+team bootstrap --skip-copy       # no: you will configure the project .qwen yourself
 ```
+
+A bare `team bootstrap` (no flag) **REFUSES** when a `~/.qwen` provider exists — it
+will not guess consent. If `~/.qwen` has no provider at all, bootstrap prints
+`SETUP NEEDED`: tell the user to configure their CLI first (`qwen` once, set a
+model/provider), then re-run.
 
 `team: command not found` → tell user:
 `ln -s <path-to>/native-team/bin/team ~/.local/bin/team`
@@ -39,8 +52,12 @@ to the user. If the invocation dir genuinely was the wrong place, `team down` an
 re-bootstrap where you meant; otherwise you are done. Pass `team bootstrap --here`
 only to silence the NOTE when you already know here is right.
 
-Warns your own `qwen` in this repo now runs YOLO without context files. True.
-`team down` undoes.
+Warns your own `qwen` in this repo now runs YOLO grunt mode without context files.
+True. The project `.qwen` is project-owned and **lives in the project** — edit it to
+retarget the grunt model. `team down` tears down the bus runtime (logs, work, inbox,
+ids) so the next bootstrap spins fresh grunts + ids, and **leaves the project
+`.qwen` in place** (it no longer restores a global). A pre-existing user `.qwen` is
+snapshotted once to `.qwen/settings.json.team-backup` for manual recovery.
 
 **2a. Give grunts the memory bank (if project has one).** Grunt starts every
 task with zero project memory — none of your accumulated learnings. Repo has a

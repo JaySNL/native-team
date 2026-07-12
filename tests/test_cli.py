@@ -56,6 +56,14 @@ class CliTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
         (self.root / ".git").mkdir()
         (self.root / "a.py").write_text(SRC)
+        # Hermetic: the init/bootstrap consent gate reads the real ~/.qwen via
+        # Path.home(); point it at an empty home so there is no provider to
+        # consent about (else a dev with a configured qwen makes these refuse).
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        hp = mock.patch.object(Path, "home", return_value=Path(self._home.name))
+        hp.start()
+        self.addCleanup(hp.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -314,6 +322,12 @@ class RootResolutionTest(unittest.TestCase):
         self.root = Path(self.tmp.name).resolve()
         (self.root / ".git").mkdir()
         self.cwd = mock.patch("pathlib.Path.cwd", return_value=self.root)
+        # Hermetic home: the init consent gate reads ~/.qwen via Path.home().
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        hp = mock.patch.object(Path, "home", return_value=Path(self._home.name))
+        hp.start()
+        self.addCleanup(hp.stop)
 
     def tearDown(self):
         self.tmp.cleanup()

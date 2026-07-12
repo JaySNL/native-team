@@ -83,6 +83,14 @@ class NamedBusCliTest(unittest.TestCase):
         os.environ.pop("TEAM_BUS", None)
         self.addCleanup(env.stop)
 
+        # Isolate HOME to an empty dir: init copies the user's global ~/.qwen
+        # provider into the project settings, so without this the written file
+        # would carry the developer's real provider and never equal the bare
+        # grunt_settings() constant these tests pin. (env.stop restores HOME.)
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        os.environ["HOME"] = home.name
+
         # `resolve_bus_name`'s walk-up starts from cwd; sit in a directory that
         # is not itself inside any bus, so the default really resolves to `.team`.
         cwd = os.getcwd()
@@ -151,16 +159,16 @@ class NamedBusCliTest(unittest.TestCase):
         _, out = _run(self.root, "init", "--bus", "auth")
         self.assertIn("export TEAM_BUS=.team-auth", out)
 
-    # -- down ref-counts the shared .qwen --
+    # -- down leaves the project .qwen (project-owned, persists) --
 
-    def test_down_restores_qwen_only_for_the_last_bus(self):
+    def test_down_leaves_qwen_and_backup_for_every_bus(self):
         self.qwen().parent.mkdir(parents=True)
         self.qwen().write_text('{"mine": true}')
-        _run(self.root, "init", "--bus", "auth")
+        _run(self.root, "init", "--bus", "auth")     # snapshots {"mine"} -> backup
         self._reset_env()
         _run(self.root, "init", "--bus", "ui")
 
-        # down one bus while the other is still live: .qwen is left alone
+        # down one bus while the other is still live: .qwen and backup left alone
         self._reset_env()
         self.assertEqual(_run(self.root, "down", "--bus", "auth")[0], 0)
         self.assertFalse((self.root / ".team-auth").exists())
@@ -168,14 +176,14 @@ class NamedBusCliTest(unittest.TestCase):
         self.assertTrue(self.backup().exists())
         self.assertEqual(json.loads(self.qwen().read_text()), config.grunt_settings())
 
-        # down the last bus: the user's original settings come back, backup gone
+        # down the last bus: project .qwen still the team's; original still in backup
         self._reset_env()
         self.assertEqual(_run(self.root, "down", "--bus", "ui")[0], 0)
         self.assertFalse((self.root / ".team-ui").exists())
-        self.assertFalse(self.backup().exists())
-        self.assertEqual(json.loads(self.qwen().read_text()), {"mine": True})
+        self.assertEqual(json.loads(self.qwen().read_text()), config.grunt_settings())
+        self.assertEqual(json.loads(self.backup().read_text()), {"mine": True})
 
-    def test_down_last_bus_removes_settings_created_fresh(self):
+    def test_down_leaves_fresh_settings_in_place(self):
         # no user settings; two buses share our fresh grunt config
         _run(self.root, "init", "--bus", "auth")
         self._reset_env()
@@ -187,7 +195,8 @@ class NamedBusCliTest(unittest.TestCase):
 
         self._reset_env()
         _run(self.root, "down", "--bus", "ui")        # the last bus out
-        self.assertFalse(self.qwen().exists())
+        self.assertTrue(self.qwen().exists())         # project-owned, persists
+        self.assertEqual(json.loads(self.qwen().read_text()), config.grunt_settings())
 
 
 if __name__ == "__main__":

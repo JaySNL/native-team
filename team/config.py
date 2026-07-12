@@ -1,14 +1,23 @@
 """Bus lifecycle, and the target repo's qwen configuration.
 
-`team init` mutates the target repo: it writes `.qwen/settings.json` so that a
-grunt qwen pane does not autoload `AGENTS.md`/`CLAUDE.md`/`QWEN.md` (measured:
-qwen loads them from the git root and `/clear` does not drop them) and does not
-wedge on an approval prompt (`approvalMode: yolo`). Everything `init` touches is
-recorded in `.team/init.json` so `team down` can put it back.
+`team init` writes the project's `.qwen/settings.json` so a grunt qwen pane does
+not autoload `AGENTS.md`/`CLAUDE.md`/`QWEN.md` (measured: qwen loads them from the
+git root and `/clear` does not drop them) and does not wedge on an approval prompt
+(`approvalMode: yolo`). On the user's consent (`--copy-provider`) it also COPIES
+the user's global `~/.qwen` model provider into this file, so the grunt config is
+self-contained and LIVES IN THE PROJECT: grunts resolve their provider from the
+project, never from the live global, and the user can retarget models by editing
+this one file. team only ever READS the global `~/.qwen` -- it never writes it (a
+`team init` from `$HOME` once did, stripping the user's provider; this design and
+the never-in-$HOME guards close that).
 
-The same settings are provisioned into every grunt worktree, because that is
-where the grunt pane's cwd is and qwen reads its config from the git root it
-finds there.
+The project `.qwen/settings.json` is provisioned (copied verbatim) into every grunt
+worktree, because that is where the grunt pane's cwd is and qwen reads its config
+from the git root it finds there. Because the settings are project-owned, `team
+down` tears down only the ephemeral bus runtime (`.team/`) and leaves `.qwen` in
+place; the next `team up` reuses it and spins fresh grunts + ids. init snapshots a
+pre-existing user `.qwen/settings.json` to `.team-backup` once, as a manual
+recovery point -- `down` never auto-restores it.
 
 Both `init(force=True)` and `down` delete `.team`. Deleting the wrong
 directory here means deleting a user's working tree, so every deletion goes
@@ -93,11 +102,12 @@ GRUNT_SETTINGS = {
     # modelProvider (the user's openai block), qwen IGNORES top-level
     # generationConfig fields and only warns. Temperature=0 for grunt determinism
     # is therefore set where it is honored -- as `extra_body.temperature` on the
-    # coder30/3.6-35B provider entries in ~/.qwen/settings.json, which the openai
-    # adapter deep-merges into the request body last (so it beats the harness's
-    # default 0.70). Greedy is strictly correct for verbatim-copy/precise-edit/
-    # scaffold work and mlx-serve applies no repetition penalty, so temp>0 is pure
-    # downside. The grunt inherits that provider config through the settings merge.
+    # provider entries carried in the project's own .qwen/settings.json (copied from
+    # the user's ~/.qwen on consent), which the openai adapter deep-merges into the
+    # request body last (so it beats the harness's default 0.70). Greedy is strictly
+    # correct for verbatim-copy/precise-edit/scaffold work and mlx-serve applies no
+    # repetition penalty, so temp>0 is pure downside. The grunt reads that provider
+    # from its own project settings -- no dependency on the live global.
     "model": {
         "name": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit-dwq-v2",
         "sessionTokenLimit": 200000,
@@ -119,22 +129,60 @@ GRUNT_CONTEXT_WINDOW_DEFAULT = 262144
 GRUNT_API_KEY_ENV = "TEAM_GRUNT_API_KEY"
 
 
-def grunt_settings(env: dict | None = None) -> dict:
+# The provider fields we lift out of the user's global ~/.qwen and copy INTO the
+# grunt's project settings.json. `modelProviders` is the endpoint list, `security`
+# holds `auth.selectedType` (which provider family is active), and `env` supplies
+# the provider's api-key value (for the local MLX server it is a dummy). Copying
+# all three makes the grunt SELF-CONTAINED: it resolves its provider from its own
+# workspace file and never leeches the live global at run time, so a later dent to
+# ~/.qwen cannot strip a running grunt. team only ever READS the global here.
+_PROVIDER_KEYS = ("modelProviders", "security", "env")
+
+
+def _read_global_settings() -> dict:
+    """The user's real qwen config at ~/.qwen/settings.json, or {} if none/unreadable.
+
+    Read-only. team copies the provider out of this into each project's settings so
+    grunts are self-contained; it must NEVER write this file (a `team init` run from
+    $HOME once did, stripping the user's provider -- the bug this design closes)."""
+    p = Path.home() / ".qwen" / "settings.json"
+    obj = bus._try_read_obj(p) if p.is_file() else None
+    return obj if isinstance(obj, dict) else {}
+
+
+def has_provider(global_settings: dict) -> bool:
+    """Whether the global config carries anything a grunt could connect through.
+
+    True when there is a provider list or an explicitly selected auth type. A bare
+    `model.name` with no provider does not count -- there is nothing to copy, so the
+    grunt would still land on qwen's "connect a provider" screen."""
+    g = global_settings or {}
+    return bool(g.get("modelProviders")
+                or ((g.get("security") or {}).get("auth") or {}).get("selectedType"))
+
+
+def grunt_settings(env: dict | None = None, global_settings: dict | None = None) -> dict:
     """The `.qwen/settings.json` payload for a grunt (and the lead repo on init).
 
     Built fresh from `env` (default `os.environ`) each call. With no TEAM_GRUNT_*
-    variables set it equals GRUNT_SETTINGS exactly, so every provenance check and
-    pinned test still holds and the author's setup is untouched. Pass `env={}` in
-    tests for the pure defaults regardless of the caller's shell.
+    variables and no `global_settings` it equals GRUNT_SETTINGS exactly, so every
+    provenance check and pinned test still holds. Pass `env={}` in tests for the
+    pure defaults regardless of the caller's shell.
+
+    `global_settings` is the user's real ~/.qwen payload (init passes
+    `_read_global_settings()`). When no TEAM_GRUNT_BASE_URL is set, the provider
+    fields (`modelProviders`/`security`/`env`) are COPIED out of it into the grunt
+    payload, so the written project settings.json is self-contained -- the grunt
+    never depends on the live global at run time. Tests pass an explicit dict; a
+    None/empty global copies nothing (the pinned constant).
 
     Overrides (all optional):
       TEAM_GRUNT_MODEL                grunt model name
       TEAM_GRUNT_SESSION_TOKEN_LIMIT  hard prompt-token ceiling
       TEAM_GRUNT_WALL_SECONDS         runaway wall-clock guard (seconds)
-      TEAM_GRUNT_BASE_URL             if set, an OpenAI-compatible provider block
-                                      is written so the grunt is self-contained;
-                                      unset, the grunt uses the user's own ~/.qwen
-                                      provider (original behavior, no extra key).
+      TEAM_GRUNT_BASE_URL             if set, an OpenAI-compatible provider block is
+                                      written from scratch (self-contained retarget)
+                                      and the global copy is skipped entirely.
       TEAM_GRUNT_CONTEXT_WINDOW       provider context window (only with a base url)
     """
     env = os.environ if env is None else env
@@ -152,7 +200,8 @@ def grunt_settings(env: dict | None = None) -> dict:
     if base_url:
         # temperature 0 as extra_body: it is honored under an active provider
         # (top-level generationConfig is ignored there). Greedy is correct for
-        # verbatim-copy / precise-edit / scaffold work.
+        # verbatim-copy / precise-edit / scaffold work. An explicit retarget is
+        # self-contained on its own, so we do NOT also copy the global provider.
         name = s["model"]["name"]
         s["modelProviders"] = {"openai": [{
             "id": name,
@@ -165,6 +214,13 @@ def grunt_settings(env: dict | None = None) -> dict:
                 "extra_body": {"temperature": 0},
             },
         }]}
+    elif global_settings:
+        # Copy the user's provider into the grunt so it is self-contained. Only the
+        # provider fields -- never the user's context files or interactive model
+        # default, which the grunt overrides keep pinned.
+        for key in _PROVIDER_KEYS:
+            if global_settings.get(key):
+                s[key] = copy.deepcopy(global_settings[key])
     return s
 
 
@@ -174,30 +230,31 @@ def grunt_backend_status(env: dict | None = None) -> tuple[str, str | None]:
     Returns one of:
       ("env", base_url)      TEAM_GRUNT_BASE_URL is set; `grunt_settings` writes a
                              self-contained provider, so the grunt is ready.
-      ("global", model|None) the grunt CLI's global `~/.qwen/settings.json` already
-                             has a provider (or a pinned model); grunts inherit it.
-      ("none", None)         no backend configured anywhere — the grunt CLI needs
+      ("global", model|None) the grunt CLI's global `~/.qwen/settings.json` has a
+                             provider; `init` copies it into each grunt's settings.
+      ("none", None)         no provider configured anywhere — the grunt CLI needs
                              setting up first, or TEAM_GRUNT_BASE_URL needs setting.
+                             A bare `model.name` with no provider counts as none:
+                             there is nothing to copy, so a grunt could not connect.
     """
     env = os.environ if env is None else env
     if env.get("TEAM_GRUNT_BASE_URL"):
         return ("env", env["TEAM_GRUNT_BASE_URL"])
-    cfg = Path.home() / ".qwen" / "settings.json"
-    obj = bus._try_read_obj(cfg) if cfg.is_file() else None
-    if isinstance(obj, dict) and (obj.get("modelProviders") or (obj.get("model") or {}).get("name")):
+    obj = _read_global_settings()
+    if has_provider(obj):
         return ("global", (obj.get("model") or {}).get("name"))
     return ("none", None)
 
 
-def _grunt_backend_note(env: dict | None = None) -> str:
-    """A one-line note for `init` output: prompt for CLI setup when no backend
-    exists, or surface the global profile (and how to point a grunt at a
-    different model) when one does."""
+def _grunt_backend_note(env: dict | None = None, copy_provider: bool = False) -> str:
+    """A one-line note for `init` output: prompt for CLI setup when no provider
+    exists, confirm the copy when the user consented, or warn that a provider
+    exists but was not copied (so the project settings cannot yet connect)."""
     status, detail = grunt_backend_status(env)
     if status == "none":
         return (
-            "SETUP NEEDED: no grunt model backend found. Your grunt CLI (qwen) has no global "
-            "~/.qwen provider and TEAM_GRUNT_BASE_URL is unset. Configure your CLI of choice "
+            "SETUP NEEDED: no grunt model backend found. Your grunt CLI (qwen) has no provider "
+            "in ~/.qwen and TEAM_GRUNT_BASE_URL is unset. Configure your CLI of choice first "
             "(run `qwen` once and set a model/provider), or set TEAM_GRUNT_BASE_URL to an "
             "OpenAI-compatible server, before adding grunts. See SERVER.md."
         )
@@ -207,9 +264,16 @@ def _grunt_backend_note(env: dict | None = None) -> str:
     # not the caller's global default -- a grunt is pinned and does not follow the
     # interactive default in ~/.qwen.
     model = grunt_settings(env)["model"]["name"]
+    if copy_provider:
+        return (
+            f"grunt backend: copied your ~/.qwen provider into the project (self-contained, "
+            f"lives in the project, never leeches the live global); grunts run model {model}. "
+            "Edit the project .qwen or set TEAM_GRUNT_MODEL to retarget."
+        )
     return (
-        f"grunt backend: using your global ~/.qwen providers; grunts run model {model}. Override the "
-        "model per-team with TEAM_GRUNT_MODEL, or point elsewhere with TEAM_GRUNT_BASE_URL."
+        "grunt backend: a provider exists in ~/.qwen but was NOT copied (no --copy-provider). "
+        "The project .qwen has no provider -- grunts will not connect until you re-init with "
+        "--copy-provider or configure the project .qwen yourself."
     )
 
 
@@ -258,20 +322,6 @@ def _assert_safe_to_delete(target: Path, root: Path) -> None:
         )
 
 
-def _other_bus_dirs(root: Path, current: Path) -> list[Path]:
-    """Every OTHER `.team*` bus directory in `root`, besides `current`.
-
-    This is the ref count behind the shared `.qwen`. Both named buses live in
-    one git root and so read one `.qwen/settings.json`: the FIRST bus to `init`
-    backs the user's real settings up, and only the LAST bus to go `down`
-    restores them. Both decisions reduce to "is any sibling bus still here?".
-    """
-    cur = current.resolve()
-    return [p for p in root.glob(".team*")
-            if p.is_dir() and bus.BUS_DIR_RE.fullmatch(p.name)
-            and p.resolve() != cur]
-
-
 def _update_gitignore(root: Path) -> None:
     path = root / ".gitignore"
     existing = path.read_text().splitlines() if path.exists() else []
@@ -282,7 +332,14 @@ def _update_gitignore(root: Path) -> None:
     bus.atomic_write(path, "\n".join(lines) + "\n")
 
 
-def init(root: Path, force: bool = False, wt=None) -> list[str]:
+def init(root: Path, force: bool = False, wt=None, copy_provider: bool = False) -> list[str]:
+    """Provision the bus and the project's `.qwen/settings.json`.
+
+    `copy_provider` (the user's consent, from cli `--copy-provider`): when set and
+    the global `~/.qwen` has a provider, copy it into the project settings so the
+    grunt config is self-contained and lives in the project. When unset, no
+    provider is written -- the project settings carry only the grunt regime and the
+    user is told to configure their CLI (or re-init with --copy-provider)."""
     wt = wt if wt is not None else worktrees.Worktrees()
     team = bus.team_dir(root)
     stale = team.exists() or team.is_symlink()
@@ -292,12 +349,8 @@ def init(root: Path, force: bool = False, wt=None) -> list[str]:
             f"instantly on yesterday's results. Run `team down`, or pass --force."
         )
 
-    prior_meta = {}
     if stale:
         _assert_safe_to_delete(team, root)
-        init_json = team / "init.json"
-        if init_json.exists():
-            prior_meta = bus.read_json(init_json)
         shutil.rmtree(team)
 
     # A bus removed by hand -- `rm -rf .team` -- takes its worktrees' directories
@@ -322,51 +375,38 @@ def init(root: Path, force: bool = False, wt=None) -> list[str]:
     settings, backup = _qwen_settings(root), _backup(root)
     settings.parent.mkdir(parents=True, exist_ok=True)
 
-    if _other_bus_dirs(root, team):
-        # Not the first team in this repo. A sibling bus already provisioned the
-        # shared `.qwen`, backing the user's real settings.json up. Touching the
-        # backup now would clobber theirs, and deriving `created` from the file
-        # would mistake their GRUNT_SETTINGS for our own doing. Own nothing: this
-        # bus's `down` must not restore or remove settings another bus manages.
-        created = False
-    elif "created_qwen_settings" in prior_meta:
-        # Re-initializing over a bus we created before (a --force re-init with
-        # no `down` in between): settings.json, if present, already holds our
-        # own GRUNT_SETTINGS, not fresh user content. Trust the provenance
-        # recorded last time instead of re-deriving it from a file we already
-        # overwrote -- that is what makes repeated --force idempotent and
-        # keeps us from re-copying our own output over the *real* backup.
-        created = prior_meta["created_qwen_settings"]
-    elif settings.exists() and bus._try_read_obj(settings) == grunt_settings():
-        # Provenance was lost -- someone removed .team by hand instead of
-        # running `team down`. But the file on disk is byte-for-byte our own
-        # GRUNT_SETTINGS, so it cannot be user content. Treat it as ours, or
-        # `down` will "restore" our YOLO config as though the user wrote it.
-        created = True
-    else:
-        created = not settings.exists()
-        if not created:
-            if backup.exists() and not force:
-                raise StateError(
-                    f"{backup} already exists from a previous `team init` that was "
-                    f"never cleanly `team down`'d. Refusing to overwrite it again -- "
-                    f"that would discard the original {settings} it is holding. "
-                    f"Restore it by hand, or pass --force."
-                )
-            shutil.copy2(settings, backup)
+    # The payload written into the project's own .qwen/settings.json. With
+    # copy_provider set (the user consented -- cli `--copy-provider`), the user's
+    # global ~/.qwen provider is COPIED in, so the project file is self-contained:
+    # grunts resolve their provider from the project, never from the live global,
+    # and the user can retarget models by editing this file. Without consent the
+    # payload carries only the grunt regime (no provider).
+    payload = grunt_settings(
+        global_settings=_read_global_settings() if copy_provider else None)
 
-    bus.write_json(settings, grunt_settings())
-    bus.write_json(team / "init.json", {"created_qwen_settings": created})
+    # One-time safety net: the first time we replace a settings.json we did not
+    # write, snapshot it to .team-backup. The team settings then LIVE IN THE
+    # PROJECT -- `down` never restores -- so the backup is a manual recovery
+    # point, not an auto-managed handoff.
+    if settings.exists() and not backup.exists():
+        on_disk = bus._try_read_obj(settings)
+        if on_disk not in (payload, grunt_settings()):
+            shutil.copy2(settings, backup)
+            notes.append(f"backed up your existing {settings} to {backup}")
+
+    bus.write_json(settings, payload)
+    bus.write_json(team / "init.json", {"copied_provider": copy_provider})
     _update_gitignore(root)
 
     return [
         f"bus ready at {team}",
-        _grunt_backend_note(),
+        _grunt_backend_note(copy_provider=copy_provider),
         f"wrote {settings} (grunt: no context files, approvalMode=YOLO). "
         f"A grunt's write tools and shell stay unrestricted; its worktree, not "
         f"this file, is what contains it.",
-        "WARNING: while this session is live, your own `qwen` in this repo loses "
-        "CLAUDE.md context and runs in YOLO mode. `team down` restores it.",
+        "NOTE: this project's .qwen/settings.json is now the team's -- your own "
+        "`qwen` here runs in YOLO grunt mode. It LIVES IN THE PROJECT; `team down` "
+        "tears down the bus runtime but leaves this file in place.",
         *notes,
     ]
 
@@ -389,12 +429,23 @@ def provision(work: Path, root: Path | None = None) -> Path:
     is already there when containment takes its baseline. `worktrees.dirty`
     filters `PROVISIONED` regardless, so ordering is belt and braces.
 
+    The worktree settings are a verbatim COPY of the project's own
+    `.qwen/settings.json` (written by `init`), so whatever provider the user
+    copied in -- and any later edit they make to the project file, e.g.
+    retargeting the model -- propagates to the grunt. No symlink (the user must
+    be able to diverge the project file without a running worktree following it)
+    and no dependency on the live global. If the project has no settings yet
+    (provision called without `root`, or before init), fall back to the bare
+    grunt regime.
+
     When `root` is given, also propagates the main tree's `PROVISIONED_LINKS`
     (see `_provision_links`).
     """
     settings = work / ".qwen" / "settings.json"
     settings.parent.mkdir(parents=True, exist_ok=True)
-    bus.write_json(settings, grunt_settings())
+    project = _qwen_settings(root) if root is not None else None
+    project_obj = bus._try_read_obj(project) if project and project.is_file() else None
+    bus.write_json(settings, project_obj if isinstance(project_obj, dict) else grunt_settings())
     if root is not None:
         _provision_links(root, work)
     return settings
@@ -496,41 +547,22 @@ def down(root: Path, force: bool = False, wt=None, killer=None) -> list[str]:
     actions: list[str] = []
 
     exists = team.exists() or team.is_symlink()
-    meta = {}
     if exists:
         _assert_safe_to_delete(team, root)
-        init_json = team / "init.json"
-        if init_json.exists():
-            meta = bus.read_json(init_json)
         # Ordering is the whole safety property. Refuse first, while nothing has
         # been touched; then kill the panes, so no agent is left running in a
         # directory that is about to vanish; then remove the worktrees, which
         # live *inside* .team and would otherwise leave prunable admin entries
-        # behind; then rmtree.
+        # behind; then rmtree the bus.
         _refuse_if_uncollected(root, wt, force)
         actions += _kill_grunt_panes(root, killer)
         actions += _drop_worktrees(root, wt, force)
-
-    settings, backup = _qwen_settings(root), _backup(root)
-    if _other_bus_dirs(root, team):
-        # A sibling bus is still live. The shared `.qwen` belongs to it now --
-        # leave it exactly as it is. Only the last bus out gives it back.
-        pass
-    elif backup.exists():
-        shutil.move(str(backup), str(settings))
-        actions.append(f"restored {settings} from backup")
-    elif settings.exists() and (
-            meta.get("created_qwen_settings")
-            or bus._try_read_obj(settings) == grunt_settings()):
-        # Last bus out, no backup: the user had no settings.json, so the one on
-        # disk is our own GRUNT_SETTINGS. `meta` covers the single-bus case; the
-        # content check also catches a multi-bus teardown where the bus that
-        # first recorded `created` was already removed, taking its init.json.
-        settings.unlink()
-        actions.append(f"removed {settings}")
-
-    if exists:
         shutil.rmtree(team)
         actions.append(f"removed {team}")
 
+    # The project's .qwen/settings.json is project-owned and PERSISTS: `down` tears
+    # down only the ephemeral bus runtime (logs, work, inbox, ids, results, ...).
+    # The team settings live in the project, so the next `team up` reuses them and
+    # spins fresh grunts + ids. Any one-time .team-backup init took of a pre-existing
+    # user settings.json is left in place for manual recovery -- never auto-restored.
     return actions

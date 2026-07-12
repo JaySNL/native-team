@@ -16,9 +16,24 @@ class ConfigTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         (self.root / ".git").mkdir()
+        # Isolate HOME so grunt_settings()/init never read the developer's real
+        # ~/.qwen provider. With an empty global the copy finds nothing, so the
+        # written payload equals the pinned constant and the drift-guards hold.
+        self.home = tempfile.TemporaryDirectory()
+        self._home_patch = patch.dict(os.environ, {"HOME": self.home.name}, clear=False)
+        self._home_patch.start()
 
     def tearDown(self):
+        self._home_patch.stop()
+        self.home.cleanup()
         self.tmp.cleanup()
+
+    def write_global_qwen(self, obj):
+        """Plant a user's real ~/.qwen/settings.json under the isolated HOME."""
+        qdir = Path(self.home.name) / ".qwen"
+        qdir.mkdir(parents=True, exist_ok=True)
+        (qdir / "settings.json").write_text(json.dumps(obj))
+        return qdir / "settings.json"
 
     def qwen(self):
         return self.root / ".qwen" / "settings.json"
@@ -95,6 +110,54 @@ class ConfigTest(unittest.TestCase):
         config.grunt_settings(env={"TEAM_GRUNT_MODEL": "x", "TEAM_GRUNT_BASE_URL": "http://h/v1"})
         self.assertEqual(config.GRUNT_SETTINGS, before)
 
+    # -- grunt_settings(): copy the provider INTO the project (permanent fix) --
+    # A grunt must never leech the live global ~/.qwen at run time: init copies the
+    # user's provider block into the self-contained project settings, so a later
+    # dent to global cannot strip a running grunt (or the user's own qwen).
+
+    def test_grunt_settings_copies_provider_from_global(self):
+        g = {
+            "modelProviders": {"openai": [{"name": "coder", "baseUrl": "http://h/v1",
+                                           "envKey": "K"}]},
+            "security": {"auth": {"selectedType": "openai"}},
+            "env": {"K": "dummy"},
+            # NOT copied: the user's own context files / interactive model default.
+            "context": {"fileName": ["CLAUDE.md"]},
+            "model": {"name": "some-35b", "reasoningEffort": "high"},
+        }
+        s = config.grunt_settings(env={}, global_settings=g)
+        # provider bits copied verbatim -> grunt is self-contained
+        self.assertEqual(s["modelProviders"], g["modelProviders"])
+        self.assertEqual(s["security"], g["security"])
+        self.assertEqual(s["env"], g["env"])
+        # grunt overrides still win: pinned model, grunt context, yolo
+        self.assertEqual(s["model"]["name"],
+                         config.GRUNT_SETTINGS["model"]["name"])
+        self.assertEqual(s["context"]["fileName"], ["TEAM_GRUNT_CONTEXT.md"])
+        # a deep copy -- mutating the result never touches the user's global dict
+        s["modelProviders"]["openai"][0]["name"] = "mutated"
+        self.assertEqual(g["modelProviders"]["openai"][0]["name"], "coder")
+
+    def test_grunt_settings_base_url_beats_global_copy(self):
+        # An explicit TEAM_GRUNT_BASE_URL retarget wins over copying the global.
+        g = {"modelProviders": {"openai": [{"name": "coder", "baseUrl": "http://GLOBAL/v1"}]},
+             "security": {"auth": {"selectedType": "openai"}}, "env": {"K": "x"}}
+        s = config.grunt_settings(
+            env={"TEAM_GRUNT_MODEL": "m", "TEAM_GRUNT_BASE_URL": "http://EXPLICIT/v1"},
+            global_settings=g)
+        self.assertEqual(s["modelProviders"]["openai"][0]["baseUrl"], "http://EXPLICIT/v1")
+        self.assertEqual(s["modelProviders"]["openai"][0]["envKey"], config.GRUNT_API_KEY_ENV)
+        # the global's own security/env are not dragged along under an explicit retarget
+        self.assertNotIn("security", s)
+        self.assertNotIn("env", s)
+
+    def test_grunt_settings_empty_global_equals_constant(self):
+        # No provider anywhere -> nothing to copy -> the pinned base payload.
+        self.assertEqual(config.grunt_settings(env={}, global_settings={}),
+                         config.GRUNT_SETTINGS)
+        self.assertEqual(config.grunt_settings(env={}, global_settings=None),
+                         config.GRUNT_SETTINGS)
+
     # -- grunt_backend_status(): first-launch guidance --
 
     def test_grunt_backend_status_env_wins(self):
@@ -113,11 +176,14 @@ class ConfigTest(unittest.TestCase):
                 (qdir / "settings.json").write_text(json.dumps(
                     {"modelProviders": {"openai": [{"name": "coder"}]}, "model": {"name": "coder"}}))
                 self.assertEqual(config.grunt_backend_status(env={}), ("global", "coder"))
-                note = config._grunt_backend_note(env={})
-                self.assertIn("global ~/.qwen", note)
-                # reports the actual pinned grunt model, not the caller's global default
+                # consented copy: confirms the copy, surfaces the pinned model
+                note = config._grunt_backend_note(env={}, copy_provider=True)
+                self.assertIn("copied", note.lower())
                 self.assertIn(config.grunt_settings(env={})["model"]["name"], note)
                 self.assertIn("TEAM_GRUNT_MODEL", note)  # can point a CLI at a different model
+                # no consent: warns the provider exists but was not copied
+                no_copy = config._grunt_backend_note(env={})
+                self.assertIn("NOT copied", no_copy)
 
     # -- init: bus tree --
 
@@ -159,6 +225,50 @@ class ConfigTest(unittest.TestCase):
         }
         self.assertEqual(got, expected)
 
+    def test_init_copies_provider_into_project_and_leaves_global_untouched(self):
+        # The permanent fix: init reads the user's real global read-only and copies
+        # the provider INTO the project settings; it never writes the global.
+        g = {
+            "modelProviders": {"openai": [{"name": "coder", "baseUrl": "http://h/v1",
+                                           "envKey": "K"}]},
+            "security": {"auth": {"selectedType": "openai"}},
+            "env": {"K": "dummy"},
+        }
+        global_path = self.write_global_qwen(g)
+        before = global_path.read_bytes()
+        config.init(self.root, copy_provider=True)  # the user consented
+        got = json.loads(self.qwen().read_text())
+        # project settings is self-contained: it carries the provider itself
+        self.assertEqual(got["modelProviders"], g["modelProviders"])
+        self.assertEqual(got["security"], g["security"])
+        self.assertEqual(got["env"], g["env"])
+        # and the user's global file is byte-for-byte untouched
+        self.assertEqual(global_path.read_bytes(), before)
+
+    def test_init_without_consent_writes_no_provider_even_if_global_has_one(self):
+        self.write_global_qwen(
+            {"modelProviders": {"openai": [{"name": "coder", "baseUrl": "http://h/v1"}]},
+             "security": {"auth": {"selectedType": "openai"}}})
+        config.init(self.root)  # copy_provider defaults False -> opt-in
+        got = json.loads(self.qwen().read_text())
+        self.assertNotIn("modelProviders", got)
+        self.assertEqual(got, config.grunt_settings())
+
+    def test_init_warns_to_configure_qwen_when_global_has_no_provider(self):
+        # Empty/unconfigured global -> nothing to copy -> tell the user to set up
+        # their CLI first, loudly, instead of silently shipping a dead grunt.
+        warnings = config.init(self.root)  # HOME isolated + empty in setUp
+        self.assertTrue(any("SETUP NEEDED" in w for w in warnings),
+                        f"expected a setup warning, got: {warnings}")
+        self.assertTrue(any("qwen" in w.lower() for w in warnings))
+
+    def test_init_no_setup_warning_when_global_has_provider(self):
+        self.write_global_qwen(
+            {"modelProviders": {"openai": [{"name": "coder", "baseUrl": "http://h/v1"}]},
+             "security": {"auth": {"selectedType": "openai"}}})
+        warnings = config.init(self.root)
+        self.assertFalse(any("SETUP NEEDED" in w for w in warnings), warnings)
+
     def test_init_backs_up_existing_settings(self):
         self.qwen().parent.mkdir(parents=True)
         self.qwen().write_text('{"mine": true}')
@@ -193,40 +303,42 @@ class ConfigTest(unittest.TestCase):
         warnings = config.init(self.root)
         self.assertTrue(any("YOLO" in w for w in warnings))
 
-    # -- init: refusing to clobber a stale settings backup --
+    # -- init: the one-time safety backup --
 
-    def test_init_refuses_stale_settings_backup_without_force(self):
+    def test_init_keeps_existing_backup_and_does_not_refuse(self):
+        # New model: the project .qwen is project-owned. A pre-existing backup is
+        # the first safety point; init does not refuse and does not re-take it --
+        # it just installs the team payload over the settings.
         self.qwen().parent.mkdir(parents=True)
         self.qwen().write_text('{"mine": true}')
         self.backup().write_text('{"original": true}')
-        with self.assertRaises(config.StateError):
-            config.init(self.root)
-        # Neither file was touched.
-        self.assertEqual(json.loads(self.qwen().read_text()), {"mine": True})
+        config.init(self.root)  # must not raise
+        self.assertEqual(json.loads(self.qwen().read_text()), config.grunt_settings())
+        # the original safety point is preserved untouched
         self.assertEqual(json.loads(self.backup().read_text()), {"original": True})
 
-    def test_init_force_overrides_stale_settings_backup(self):
-        self.qwen().parent.mkdir(parents=True)
-        self.qwen().write_text('{"mine": true}')
-        self.backup().write_text('{"original": true}')
-        config.init(self.root, force=True)  # must not raise
-        got = json.loads(self.qwen().read_text())
-        self.assertEqual(got["tools"]["approvalMode"], "yolo")
+    # -- down: the project .qwen is project-owned and PERSISTS --
 
-    # -- down --
-
-    def test_down_restores_backup(self):
+    def test_down_leaves_project_qwen_and_backup_in_place(self):
         self.qwen().parent.mkdir(parents=True)
         self.qwen().write_text('{"mine": true}')
         config.init(self.root)
+        # init snapshots the user's original once, as a manual recovery point
+        self.assertEqual(json.loads(self.backup().read_text()), {"mine": True})
         config.down(self.root)
-        self.assertEqual(json.loads(self.qwen().read_text()), {"mine": True})
+        # down tears down the bus but leaves the (now team-owned) project settings
+        self.assertTrue(self.qwen().exists())
+        self.assertEqual(json.loads(self.qwen().read_text()), config.grunt_settings())
         self.assertFalse((self.root / ".team").exists())
+        # the backup is left for manual recovery, never auto-restored
+        self.assertEqual(json.loads(self.backup().read_text()), {"mine": True})
 
-    def test_down_removes_settings_it_created(self):
+    def test_down_leaves_settings_it_created(self):
         config.init(self.root)
         config.down(self.root)
-        self.assertFalse(self.qwen().exists())
+        self.assertTrue(self.qwen().exists())  # project-owned, persists
+        self.assertEqual(json.loads(self.qwen().read_text()), config.grunt_settings())
+        self.assertFalse((self.root / ".team").exists())
 
     def test_down_noop_on_absent_bus(self):
         # No .team, no .qwen at all: must succeed quietly, not raise.
@@ -235,13 +347,15 @@ class ConfigTest(unittest.TestCase):
         self.assertFalse((self.root / ".team").exists())
         self.assertFalse(self.qwen().exists())
 
-    def test_down_after_force_reinit_still_restores_true_original(self):
+    def test_backup_preserves_true_original_across_force_reinit(self):
         self.qwen().parent.mkdir(parents=True)
         self.qwen().write_text('{"mine": true}')
-        config.init(self.root)
-        config.init(self.root, force=True)  # re-init over our own bus, no down() in between
+        config.init(self.root)              # snapshots {"mine"} -> backup
+        config.init(self.root, force=True)  # backup already exists, not re-taken
         config.down(self.root)
-        self.assertEqual(json.loads(self.qwen().read_text()), {"mine": True})
+        # project settings is the team's; the user's true original survives in backup
+        self.assertEqual(json.loads(self.backup().read_text()), {"mine": True})
+        self.assertEqual(json.loads(self.qwen().read_text()), config.grunt_settings())
 
     # -- SAFETY: never delete anything not proven to be <repo_root>/.team --
 
@@ -373,9 +487,11 @@ if __name__ == "__main__":
 
 
 class LostProvenanceTest(unittest.TestCase):
-    """`rm -rf .team` (instead of `team down`) destroys init.json. The next
-    init must not mistake its own GRUNT_SETTINGS for user content, or `down`
-    leaves a YOLO grunt config behind in the user's repo. Observed live.
+    """`rm -rf .team` (instead of `team down`) destroys init.json. Under the
+    project-owned model that no longer matters for `.qwen`: the settings live in
+    the project and `down` leaves them, so there is no provenance to lose. What
+    must still hold: the one-time safety backup is never re-taken over our own
+    output, and a real user original snapshotted at first init survives the dance.
     """
 
     def setUp(self):
@@ -384,24 +500,28 @@ class LostProvenanceTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
         (self.root / ".git").mkdir()
 
-    def test_reinit_after_manual_team_removal_leaves_no_settings_behind(self):
+    def test_reinit_after_manual_team_removal_never_backs_up_our_own_output(self):
         config.init(self.root)                      # user had no settings.json
         shutil.rmtree(bus.team_dir(self.root))      # provenance destroyed
-        config.init(self.root)
+        config.init(self.root)                      # settings on disk are OUR payload
         config.down(self.root)
-        self.assertFalse((self.root / ".qwen" / "settings.json").exists(),
-                         "team down left our YOLO settings in the repo")
+        # the project settings persist (project-owned), and we never mistook our own
+        # YOLO payload for user content to snapshot
+        self.assertEqual(json.loads((self.root / ".qwen" / "settings.json").read_text()),
+                         config.grunt_settings())
         self.assertFalse((self.root / ".qwen" / "settings.json.team-backup").exists())
 
-    def test_real_user_settings_still_survive_the_same_dance(self):
+    def test_real_user_original_survives_in_backup_across_the_dance(self):
         q = self.root / ".qwen"
         q.mkdir()
         (q / "settings.json").write_text(json.dumps({"mine": True}))
-        config.init(self.root)
+        config.init(self.root)                      # snapshots {"mine"} -> backup
         shutil.rmtree(bus.team_dir(self.root))
-        config.init(self.root, force=True)
+        config.init(self.root, force=True)          # backup already there, not re-taken
         config.down(self.root)
-        self.assertEqual(json.loads((q / "settings.json").read_text()), {"mine": True})
+        # the user's original survives in the backup; the project settings are the team's
+        self.assertEqual(json.loads((q / "settings.json.team-backup").read_text()), {"mine": True})
+        self.assertEqual(json.loads((q / "settings.json").read_text()), config.grunt_settings())
 
 
 class _RealRepo(unittest.TestCase):

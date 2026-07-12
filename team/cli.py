@@ -28,7 +28,7 @@ OK, VERIFY_FAIL, PANE_GONE, REFUSED, TIMEOUT, BLOCKED = 0, 1, 2, 3, 4, 5
 #                 bus and claims the lead -- repo + bus + lead in one call.
 #   init       -- plumbing, hidden: writes the paneless bus at cwd (named buses,
 #                 headless e2e); assumes the dir exists.
-#   down       -- removes the bus at cwd, restores the .qwen it replaced.
+#   down       -- removes the bus runtime at cwd; leaves the project .qwen in place.
 #
 # The OTHER verbs (send/verify/wait/result) address an EXISTING bus and find it by
 # `.team` via `bus_root`, which stops at cwd when cwd holds the bus and only climbs
@@ -120,6 +120,43 @@ def _digest(msg: dict) -> str:
     return f"{msg['type']:<8} {msg['id']} from {msg['from']} task {msg['task']}: {body}"
 
 
+def _add_provider_flags(p):
+    """`--copy-provider` / `--skip-copy`: consent for copying the user's ~/.qwen
+    model provider into the project (see `config.init`). Mutually exclusive."""
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--copy-provider", action="store_true", dest="copy_provider",
+                   help="copy your ~/.qwen model provider into this project's .qwen "
+                        "so grunts are self-contained (the config then lives in the "
+                        "project; edit it there to retarget models)")
+    g.add_argument("--skip-copy", action="store_true", dest="skip_copy",
+                   help="do not copy a provider; you will configure the project "
+                        ".qwen yourself")
+
+
+def _resolve_copy_provider(args) -> bool:
+    """Resolve the copy-provider consent for `config.init`.
+
+    Explicit flags win. With neither and a provider actually present to copy,
+    prompt on a TTY; OFF a TTY (the lead runs `team` from a subprocess) refuse
+    rather than silently guess -- the lead is meant to ask the user and pass a
+    flag. When there is nothing to copy (no global provider, or the
+    TEAM_GRUNT_BASE_URL path writes its own), consent is moot -> False."""
+    if getattr(args, "copy_provider", False):
+        return True
+    if getattr(args, "skip_copy", False):
+        return False
+    if config.grunt_backend_status()[0] != "global":
+        return False  # nothing to copy: unconfigured, or self-contained via base url
+    if sys.stdin.isatty():
+        ans = input("Copy your ~/.qwen model provider into this project so grunts "
+                    "are self-contained? [y/N] ").strip().lower()
+        return ans in ("y", "yes")
+    raise SystemExit(
+        "consent needed: a ~/.qwen provider exists. Re-run with --copy-provider to "
+        "copy it into this project's .qwen (self-contained grunts that live in the "
+        "project), or --skip-copy to configure the project .qwen yourself.")
+
+
 def cmd_init(args, root):
     """PLUMBING, hidden from `--help`. Write the bus at `root` WITHOUT a lead pane
     or any git setup -- it assumes the directory already exists. `bootstrap` is the
@@ -128,7 +165,8 @@ def cmd_init(args, root):
     auth` -- several independent teams in one repo, each led separately), and the
     headless end-to-end tests. Resolved to cwd, never `repo_root()`, so a bare
     `team init` writes here and can never climb to $HOME the way it once did."""
-    for line in config.init(root, force=args.force):
+    for line in config.init(root, force=args.force,
+                            copy_provider=_resolve_copy_provider(args)):
         print(line)
     busname = bus.resolve_bus_name(getattr(args, "bus", None))
     if busname != bus.TEAM:
@@ -256,7 +294,8 @@ def cmd_bootstrap(args, root, p=None):
         print("\n" + notice, file=sys.stderr)
 
     if not bus.team_dir(root).exists() or args.force:
-        actions += config.init(root, force=args.force)
+        actions += config.init(root, force=args.force,
+                               copy_provider=_resolve_copy_provider(args))
     else:
         actions.append(f"bus already at {bus.team_dir(root)}")
 
@@ -645,6 +684,7 @@ def build_parser() -> argparse.ArgumentParser:
     # only `bootstrap` does -- and a user scanning the help meets one setup verb.
     p = sub.add_parser("init", parents=[bus_parent])
     p.add_argument("--force", action="store_true")
+    _add_provider_flags(p)
     p.set_defaults(fn=cmd_init)
 
     p = sub.add_parser("down", parents=[bus_parent])
@@ -687,6 +727,7 @@ def build_parser() -> argparse.ArgumentParser:
                                 "another git repo: bootstrap nests a repo here and "
                                 "pins the bus here either way; --here says you meant "
                                 "that, so the explanatory NOTE is suppressed")
+            _add_provider_flags(p)
         p.set_defaults(fn=fn)
 
     g = sub.add_parser("grunt").add_subparsers(dest="gcmd", required=True)
