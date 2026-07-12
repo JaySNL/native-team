@@ -57,9 +57,11 @@ This is a delegation bus; code lookup is one mode on it, not the whole tool.
 - `--type ask` — a question with **no source**: "ELI5 E=mc²", "draft a changelog
   line". The grunt answers from its own knowledge. It takes **no `--scope`** —
   naming a file is a claim about that file, which is a `find` task. The answer
-  seals as prose and `team wait` hands it straight back to you. You render it;
-  you do not re-derive it. Nothing verifies, because there is no claim about the
-  code to check — `verify` says `NOTHING TO VERIFY`, not `PASS`.
+  seals as prose. `team wait` prints only `SEALED: 007`; `team answer 007`
+  renders that prose to your **terminal**, not into your context. Add `--capture`
+  to pull it into your context instead, for when you must read it to QA a point.
+  Nothing verifies, because there is no claim about the code to check — `verify`
+  says `NOTHING TO VERIFY`, not `PASS`.
 
 Do not route a code question through `ask` to dodge the verifier. If the answer
 lives in a file, it is a `find` task, and the grep is the grunt's job, not yours.
@@ -79,9 +81,10 @@ BLOCKED: 007 (blocked 008) nothing in scope cites this
   team send grunt1 --reply 008 "<your answer>"
 ```
 
-Answer it (`--reply`), supersede it with a corrected task, or `grunt rm` it. A
-sealed ask task prints its answer under `ANSWER 007:` — that is the grunt's work,
-already done; render it unless it is wrong or the task needs a follow-up.
+Answer it (`--reply`), supersede it with a corrected task, or `grunt rm` it. For
+a sealed ask task, `team answer 007` renders the grunt's prose to your terminal;
+add `--capture` to read it into your context when you need to QA it or decide a
+follow-up.
 
 ### `team verify <tid> [--show] [--lenient]`
 
@@ -105,6 +108,8 @@ Statuses, worst to best: `MALFORMED`, `UNREADABLE`, `OUT_OF_TREE`, `NO_FILE`,
 ```
 team inbox                     # messages from grunts to you
 team show <msg_id>             # full body of one message
+team answer <tid>              # render a sealed ask answer to your terminal
+team answer <tid> --capture    # ...into your context instead, to QA it
 team log <agent> [--tail N]    # rendered pane transcript
 team send <agent> --reply <msg_id> "text"    # answer a --blocked grunt
 team send <agent> --supersede --question "..."   # cancel its current turn, retask
