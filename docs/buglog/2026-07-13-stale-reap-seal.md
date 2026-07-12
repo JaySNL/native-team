@@ -7,7 +7,8 @@
 - **Component:** `team/wait.py` (`_reap_answer` / lead-side fallback seal), with
   a contributing failure-open in `team/collect.py`.
 - **Repro'd in:** `/home/jooshua/teamTest/.team` with grunt1 (local Qwen-30B via MLX).
-- **Status:** open. Real answer for the affected task is **recoverable** (see below).
+- **Status:** **FIXED** 2026-07-13 (see Resolution). Report verified accurate on
+  every claim against the code before fixing. Affected 007 answer was salvaged.
 
 ---
 
@@ -120,3 +121,34 @@ re-running the grunt. Note this same scratch file will be clobbered by the grunt
 - `team/collect.py:48-52` — reads sealed result; fails open once falsely sealed.
 - `team/bus.py` — `result_path()` / scratch path layout (`ANSWER.md` naming).
 - `team/protocol.py` — seal protocol (if task-id binding is added here).
+
+## Resolution (2026-07-13)
+
+Fixed with report options **(b) + (d)**; verified with a regression test that fails
+without the fix (reap sealed B with A's answer: `True is not false`) and passes with it.
+
+- **(b) dispatch clears the answer file + a reap staleness fence.**
+  `ops.compose_ask_task` now stamps `dispatched_at` on the task and **truncates
+  BOTH** reap-candidate `ANSWER.md` paths (worktree + inbox fallback) on dispatch.
+  An empty file trips the reap's existing `st_size == 0` skip, so a reap for task
+  B can no longer see task A's leftover. `wait._reap_answer` additionally skips any
+  candidate whose `mtime < dispatched_at - REAP_SKEW` (2s grace for fs mtime
+  resolution / clock skew) — an independent backstop covering the inbox path.
+  Chose the fixed filename + truncate over per-task `ANSWER.<tid>.md` (option a):
+  30B grunts already fumble the plain path (hence the inbox fallback), and a
+  per-task name would lower the reap hit-rate when the grunt writes the wrong file.
+- **(d) reaped seals are visible.** A lead-side reap threads `reaped=True` through
+  `ops.result_answer`/`result_done`, stamping `"sealed_by": "reap"` on the result;
+  `team wait` prints `SEALED (reaped): <tid>` so a heuristic seal is distinguishable
+  from a grunt's own.
+- **Secondary (`collect.py` fail-open):** left as-is. It is correct downstream of
+  the real defect (it cannot know a sealed result is wrong); with the primary race
+  closed there is nothing false for it to read.
+
+Salvage of the reported instance: the real 007 answer (911-word screenplay) was
+re-promoted into `results/007.json` from `work/grunt1/ANSWER.md` before it could be
+clobbered.
+
+Tests: `tests/test_ask_and_blocked.py` (`test_reap_will_not_seal_a_prior_tasks_answer`,
+`test_dispatch_clears_a_prior_answer_file`, `test_reaped_seal_is_marked_grunt_seal_is_not`).
+518 pass.
