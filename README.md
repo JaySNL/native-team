@@ -4,13 +4,17 @@
 
 # native-team
 
-Run a `claude` lead and interactive `qwen` grunts in adjacent tmux panes, coordinated by a
-directory you can `cat`. No daemon, no Electron, no copy-paste.
+Run a lead and interactive grunts — each an agent CLI — in adjacent tmux panes, coordinated by a
+directory you can `cat`. No daemon, no Electron, no copy-paste. A grunt is just a CLI on the bus:
+which CLI, which model, and which guardrails are your config. It ships wired for a `claude` lead and
+`qwen` grunts, but the backend is yours — anything OpenAI-compatible.
 
-**A grunt's answer is not trusted.** Measured citation accuracy on real tasks was 2/5, 0/4, 3/4 —
-and every miss was caught only by re-reading the cited line. So `team verify` re-reads every line a
-grunt cites, compares the evidence byte-for-byte, and **fails closed**. On the first task ever sent
-to a live grunt it caught one: qwen cited `team/protocol.py:10` for a symbol that is on line 8.
+**A delegated answer isn't trusted until it's checked — no matter how capable the grunt.** `team
+verify` re-reads every line a grunt cites, compares the evidence byte-for-byte, and **fails closed**,
+so a wrong citation can't slip through, whatever model is behind the grunt. Why it earns its keep: a
+live `qwen` grunt scored 2/5, 0/4, 3/4 on citation accuracy on real tasks, and every miss was caught
+only by re-reading the cited line. On the very first task sent, it cited `team/protocol.py:10` for a
+symbol that is on line 8 — `verify` caught it.
 
 That check is the reason this exists. The tmux plumbing is the easy part.
 
