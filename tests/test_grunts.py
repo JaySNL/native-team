@@ -447,3 +447,26 @@ class OwnBusGuard(unittest.TestCase):
         with mock.patch.dict(os.environ, {"TMUX_PANE": "%99"}):
             with self.assertRaisesRegex(StateError, "cross-contaminate"):
                 api.send(self.root, "grunt1", question="q", scope=["src"])
+
+
+class InitLocationGuard(unittest.TestCase):
+    """`team init` must never write the bus above the cwd. The whole of $HOME is a
+    git repo, so `team init` in ~/teamTest resolved repo_root=$HOME and created
+    ~/.team plus rewrote the global ~/.qwen. It now refuses, pointing at
+    `bootstrap --here`; only `down` may still reach a bus above the cwd."""
+
+    def test_refuses_when_the_repo_root_is_above_the_cwd(self):
+        with self.assertRaisesRegex(StateError, "would create the bus at"):
+            cli._guard_init_location("init", Path("/repo"),
+                                     cwd=Path("/repo/scratch"))
+
+    def test_allows_init_at_the_repo_root(self):
+        cli._guard_init_location("init", Path("/repo"), cwd=Path("/repo"))  # no raise
+
+    def test_does_not_guard_down(self):
+        cli._guard_init_location("down", Path("/repo"), cwd=Path("/repo/scratch"))
+
+    def test_the_home_case_names_the_danger(self):
+        home = Path.home()
+        with self.assertRaisesRegex(StateError, "HOME directory"):
+            cli._guard_init_location("init", home, cwd=home / "teamTest")

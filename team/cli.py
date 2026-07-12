@@ -126,6 +126,31 @@ def cmd_init(args, root):
     return OK
 
 
+def _guard_init_location(cmd: str, root: Path, cwd: Path | None = None) -> None:
+    """`team init` writes the bus at the enclosing git repo root. When that root
+    is ABOVE the cwd the bus lands where the user did not mean -- and the whole of
+    $HOME is a git repo, so a scratch dir under it resolves to $HOME. Measured:
+    `team init` in ~/teamTest created ~/.team and rewrote the global ~/.qwen. The
+    invocation dir is the project; refuse and name the command that makes it one.
+    Only `init` is guarded -- `down` must still reach such a bus to tear it down.
+    """
+    if cmd != "init":
+        return
+    cwd = (cwd or Path.cwd()).resolve()
+    if root.resolve() == cwd:
+        return
+    home = (f"\n{root} is your HOME directory -- a bus there scatters grunt "
+            f"worktrees across it and rewrites your global ~/.qwen. Never there."
+            if root.resolve() == Path.home().resolve() else "")
+    raise StateError(
+        f"you are in {cwd}, but the git repo enclosing it is {root}, so "
+        f"`team init` would create the bus at {root}, not here. Make this "
+        f"directory its own project instead:\n"
+        f"  team bootstrap --here   # git-init {cwd} and set up the bus here\n"
+        f"or `cd {root} && team init` if that repo really is the project.{home}"
+    )
+
+
 def cmd_brief(args, root):
     if not BRIEF.is_file():
         print(f"no brief at {BRIEF}", file=sys.stderr)
@@ -760,6 +785,7 @@ def main(argv: list[str]) -> int:
             root = Path.cwd().resolve()
         elif args.cmd in PRE_BUS_COMMANDS:
             root = bus.repo_root()
+            _guard_init_location(args.cmd, root)
         else:
             root = bus.bus_root()
         return args.fn(args, root)
