@@ -12,10 +12,11 @@ finds there.
 
 Both `init(force=True)` and `down` delete `.team`. Deleting the wrong
 directory here means deleting a user's working tree, so every deletion goes
-through `_assert_safe_to_delete`, which resolves symlinks and independently
-re-derives the repo boundary via `bus.repo_root` before allowing anything to
-be removed. Do not call `shutil.rmtree` on a bus path anywhere else in this
-module without going through that guard first.
+through `_assert_safe_to_delete`, which resolves symlinks and checks the target
+is a real `.team*` directory sitting directly inside the invocation root (the
+cwd the command was run in) before allowing anything to be removed. Do not call
+`shutil.rmtree` on a bus path anywhere else in this module without going through
+that guard first.
 """
 import copy
 import os
@@ -227,23 +228,24 @@ def _backup(root: Path) -> Path:
 
 
 def _assert_safe_to_delete(target: Path, root: Path) -> None:
-    """Refuse to treat `target` as a deletable bus dir unless it is
-    unambiguously a `<repo_root>/.team` or `<repo_root>/.team-<slug>` once
-    symlinks are resolved.
+    """Refuse to treat `target` as a deletable bus dir unless it is unambiguously
+    a `<root>/.team` or `<root>/.team-<slug>` once symlinks are resolved, where
+    `root` is the directory the command was invoked in (the cwd).
 
     A symlinked bus dir is refused outright, even if it happens to point back
-    inside the repo -- a bus dir must always be a real directory this module
-    created, never a link. For a non-symlink target, the resolved path's
-    final component must be a bus dir name (catching a `bus.team_dir` that
-    hands back some other directory under a misleading name) *and* the
-    independently-recomputed `bus.repo_root(root)` must be one of its
-    resolved parents (catching one that resolves outside the repo entirely).
+    inside `root` -- a bus dir must always be a real directory this module
+    created, never a link. For a non-symlink target, the resolved path's final
+    component must be a bus dir name (catching a `bus.team_dir` that hands back
+    some other directory under a misleading name) *and* `root` itself must be one
+    of its resolved parents (catching one that resolves outside cwd entirely).
+    The boundary is `root`, not a walked-up git repo: the bus lives where you run,
+    so `down` must delete `<cwd>/.team` whether or not cwd is its own git repo.
     Any failure raises `StateError` instead of touching the filesystem.
     """
     if target.is_symlink():
         raise StateError(f"refusing to delete {target}: it is a symlink, not a real directory")
     resolved = target.resolve()
-    root_resolved = bus.repo_root(root).resolve()
+    root_resolved = root.resolve()
     if not bus.BUS_DIR_RE.fullmatch(resolved.name):
         raise StateError(
             f"refusing to delete {target}: resolves to {resolved}, "

@@ -347,6 +347,26 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(canary.exists())
         self.assertTrue(external_team.exists())
 
+    def test_down_removes_the_bus_at_cwd_even_when_cwd_is_not_a_git_repo(self):
+        """The reported bug: `team down` in ~/teamTest -- a dir that holds a bus
+        but is not its own git repo, nested under a parent git repo -- resolved
+        the boundary UP to the parent and tore down the wrong (or no) bus, leaving
+        ~/teamTest/.team on disk while the lead narrated success over empty output.
+        The guard now bounds on the invocation root (cwd), never a walked-up repo,
+        so the bus at cwd is removed whether or not cwd is its own git repo.
+
+        `self.root` stands in for the parent repo (it has a `.git`); `sub` is the
+        bus dir with none of its own."""
+        sub = self.root / "teamTest"
+        sub.mkdir()
+        self.assertFalse((sub / ".git").exists())          # not its own repo
+        list(config.init(sub))
+        self.assertTrue((sub / ".team").is_dir())
+        actions = config.down(sub)
+        self.assertFalse((sub / ".team").exists())          # the REAL bus is gone
+        self.assertIn(f"removed {sub / '.team'}", " ".join(actions))
+        self.assertFalse((self.root / ".team").exists())    # parent never touched
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,22 +17,24 @@ from team.schema import SchemaError
 
 OK, VERIFY_FAIL, PANE_GONE, REFUSED, TIMEOUT, BLOCKED = 0, 1, 2, 3, 4, 5
 
-# `down` destroys a bus, so it locates the repo by `.git`, walking up to find it.
-# Every other verb addresses an existing bus and must find it by `.team`: a grunt
-# running a build task sits in a git worktree under `.team/work/<agent>`, and
-# `repo_root` would stop at that worktree's own `.git` file and address a bus that
-# isn't there.
-PRE_BUS_COMMANDS = frozenset({"down"})
-
-# `bootstrap` (porcelain) and `init` (plumbing, hidden) both run before a bus and
-# live by ONE rule the user has stated repeatedly: the bus lives WHERE YOU START
-# IT, never up the tree. So they take cwd -- NOT `repo_root()`, which walks up and
-# once wrote the bus to $HOME for a scratch dir under it. `bootstrap` is the sole
-# setup verb users see: `_pin_repo_here` makes the cwd its own git repo (creating
-# or nesting one), then it writes the bus and claims the lead -- repo + bus + lead
-# in one idempotent call. `init` is the paneless primitive beneath it (named buses,
-# headless e2e); it only writes the bus, and assumes the dir already exists.
-CWD_COMMANDS = frozenset({"bootstrap", "init"})
+# The bus is RELATIVE TO THE DIRECTORY YOU RUN IN. `bootstrap`/`init` create it at
+# cwd; `down` removes it at cwd. Not up (never climbing to $HOME by `.git`), not
+# sideways. So all three take cwd verbatim -- NOT `repo_root()`, which walked up
+# for a `.git` and, from a scratch dir under $HOME, tore down `$HOME/.team` (or
+# nothing) while leaving the real bus untouched.
+#
+#   bootstrap  -- porcelain, the sole setup verb users see: `_pin_repo_here` makes
+#                 cwd its own git repo (creating or nesting one), then writes the
+#                 bus and claims the lead -- repo + bus + lead in one call.
+#   init       -- plumbing, hidden: writes the paneless bus at cwd (named buses,
+#                 headless e2e); assumes the dir exists.
+#   down       -- removes the bus at cwd, restores the .qwen it replaced.
+#
+# The OTHER verbs (send/verify/wait/result) address an EXISTING bus and find it by
+# `.team` via `bus_root`, which stops at cwd when cwd holds the bus and only climbs
+# for a grunt whose cwd is its worktree under `.team/work/<agent>`. From the lead's
+# own directory that never leaves cwd either.
+CWD_COMMANDS = frozenset({"bootstrap", "init", "down"})
 
 # Never `build.sh`: it deploys shared libraries into the game directory before
 # compiling, and a grunt is an unattended process with an unrestricted shell.
@@ -422,8 +424,14 @@ def cmd_down(args, root, p=None):
     # did not start would tear down another project. Refuse a foreign bus.
     api.assert_own_bus(root)
     p = p if p is not None else panes.Panes()
-    for line in config.down(root, force=args.force, killer=p.kill):
+    lines = config.down(root, force=args.force, killer=p.kill)
+    for line in lines:
         print(line)
+    if not lines:
+        # config.down does nothing when there is no bus at cwd. Say so out loud: an
+        # empty tool result reads to the lead as success -- it narrated "bus torn
+        # down" over a bus (at $HOME, via the old walk-up) that was never touched.
+        print(f"nothing to tear down: no bus at {bus.team_dir(root)}")
     return OK
 
 
@@ -799,10 +807,8 @@ def main(argv: list[str]) -> int:
             return args.fn(args, None)
         if args.root:
             root = Path(args.root).resolve()
-        elif args.cmd in CWD_COMMANDS:          # init, bootstrap -> pin the cwd
+        elif args.cmd in CWD_COMMANDS:          # bootstrap/init/down -> cwd, verbatim
             root = Path.cwd().resolve()
-        elif args.cmd in PRE_BUS_COMMANDS:      # down -> find the bus above
-            root = bus.repo_root()
         else:
             root = bus.bus_root()
         return args.fn(args, root)

@@ -79,9 +79,11 @@ def resolve_bus_name(cli_flag: str | None = None, start: Path | None = None) -> 
 
 
 def repo_root(start: Path | None = None) -> Path:
-    """The enclosing git repository. Used only by `down`, which walks up to find
-    the bus it is tearing down. (`init`/`bootstrap` pin the cwd instead -- the bus
-    lives where you start it, never up the tree.)"""
+    """The enclosing git repository, by walking up for `.git`. A utility; the
+    command flow no longer uses it to place or remove a bus -- `bootstrap`/`init`/
+    `down` all pin the cwd, because the bus lives where you run, never up the tree.
+    (`_pin_repo_here` uses `git toplevel` directly; the delete guard bounds on the
+    invocation root, not this.)"""
     cur = (start or Path.cwd()).resolve()
     for cand in [cur, *cur.parents]:
         if (cand / ".git").exists():
