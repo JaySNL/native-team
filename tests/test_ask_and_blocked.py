@@ -134,6 +134,64 @@ class LeadReapsStrandedAnswer(_Bus):
         self.assertTrue(r.ok)
 
 
+class AnswerRendersToTerminal(_Bus):
+    """`team answer` puts an ask grunt's prose on the human's terminal, not into
+    the lead's context. Surfacing the answer must cost the lead ~no tokens, so it
+    has nothing to read-and-relay -- the structural half of the no-relay rule."""
+
+    class _FakeTTY(io.StringIO):
+        def close(self):  # keep the buffer readable after cmd_answer closes it
+            pass
+
+    def _seal(self, text):
+        tid = ops.compose_ask_task(self.root, "grunt1", "ELI5 E=mc2")
+        ops.result_answer(self.root, tid, text)
+        return tid
+
+    def test_default_renders_to_tty_and_keeps_prose_out_of_stdout(self):
+        from team import cli
+        tid = self._seal("Energy equals mass times c squared.")
+        args = cli.build_parser().parse_args(["answer", tid])
+        tty = self._FakeTTY()
+        with redirect_stdout(io.StringIO()) as out:
+            rc = cli.cmd_answer(args, self.root, open_tty=lambda: tty)
+        self.assertEqual(rc, cli.OK)
+        # prose went to the terminal, verbatim
+        self.assertEqual(tty.getvalue(), "Energy equals mass times c squared.\n")
+        # stdout -- what the lead's harness captures as tokens -- has only the
+        # marker, never the prose. This is the whole point.
+        self.assertIn("rendered to your terminal", out.getvalue())
+        self.assertNotIn("Energy equals mass", out.getvalue())
+
+    def test_capture_puts_prose_on_stdout_for_qa(self):
+        from team import cli
+        tid = self._seal("the whole point")
+        args = cli.build_parser().parse_args(["answer", tid, "--capture"])
+        tty = self._FakeTTY()
+        with redirect_stdout(io.StringIO()) as out:
+            rc = cli.cmd_answer(args, self.root, open_tty=lambda: tty)
+        self.assertEqual(rc, cli.OK)
+        self.assertEqual(tty.getvalue(), "")               # terminal untouched
+        self.assertIn("the whole point", out.getvalue())   # prose in context, as asked
+
+    def test_falls_back_to_stdout_when_there_is_no_terminal(self):
+        from team import cli
+        tid = self._seal("headless answer")
+        args = cli.build_parser().parse_args(["answer", tid])
+        with redirect_stdout(io.StringIO()) as out:
+            rc = cli.cmd_answer(args, self.root, open_tty=lambda: None)
+        self.assertEqual(rc, cli.OK)
+        self.assertIn("headless answer", out.getvalue())   # not dropped
+
+    def test_unsealed_task_is_refused(self):
+        from team import cli
+        tid = ops.compose_ask_task(self.root, "grunt1", "q")   # no answer sealed
+        args = cli.build_parser().parse_args(["answer", tid])
+        with redirect_stdout(io.StringIO()):
+            rc = cli.cmd_answer(args, self.root, open_tty=lambda: self._FakeTTY())
+        self.assertEqual(rc, cli.REFUSED)
+
+
 class TheScopeFence(_Bus):
     """An ask task takes no scope. Naming a file is a claim about that file, and
     a claim is checkable -- so it is a find task. Without the fence, `ask` is a

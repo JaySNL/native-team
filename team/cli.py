@@ -476,13 +476,53 @@ def cmd_result(args, root):
     return OK
 
 
-def cmd_answer(args, root):
+def _open_tty():
+    """The controlling terminal as a writable file, or None if this process has
+    none. Split out so a test can substitute a buffer for `/dev/tty`.
+
+    A lead runs `team answer` through its own shell, and its harness captures the
+    command's stdout as context tokens. The controlling terminal is a separate
+    device: in the lead's tmux pane it is the very screen the human is watching,
+    but it is not the piped stdout the lead ingests. Writing the prose there puts
+    the answer in front of the human at zero token cost to the lead.
+    """
+    try:
+        return open("/dev/tty", "w")
+    except OSError:
+        return None
+
+
+def cmd_answer(args, root, open_tty=_open_tty):
     text = api.answer(root, args.task)
     if text is None:
         print(f"task {args.task} has no sealed answer "
               f"(not an ask task, or not sealed yet)", file=sys.stderr)
         return REFUSED
-    print(text)
+
+    # An ask grunt's prose IS the deliverable; the lead's job is to put it in
+    # front of the human, not to read it and re-type it. `team answer 007` renders
+    # it to the terminal and hands the lead only a one-line marker, so the whole
+    # answer never lands in the lead's context to be relayed. `--capture` is the
+    # deliberate exception: pull the prose into context to QA a specific point.
+    if args.capture:
+        print(text)
+        return OK
+
+    tty = open_tty()
+    if tty is None:
+        # No controlling terminal (piped, headless, some MCP setups). There is
+        # nowhere to render but stdout; fall back rather than drop the answer.
+        print(text)
+        return OK
+    try:
+        tty.write(text.rstrip("\n") + "\n")
+        tty.flush()
+    finally:
+        tty.close()
+    print(f"ANSWER {args.task} rendered to your terminal ({len(text)} chars) -- "
+          f"not pulled into your context. It is the grunt's finished work, now on "
+          f"screen for the human: leave it there, do not relay it. Re-run with "
+          f"--capture only if you must read it yourself to QA a point.")
     return OK
 
 
@@ -659,9 +699,12 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--agent", default=_default_agent())
     p.set_defaults(fn=cmd_result)
 
-    p = sub.add_parser("answer", help="print a sealed ask task's answer",
-                       parents=[bus_parent])
+    p = sub.add_parser("answer", help="render a sealed ask task's answer to your "
+                       "terminal (not into your context)", parents=[bus_parent])
     p.add_argument("task")
+    p.add_argument("--capture", action="store_true",
+                   help="print the prose to stdout instead of the terminal, so it "
+                        "enters your context -- only to QA a specific point")
     p.set_defaults(fn=cmd_answer)
 
     p = sub.add_parser("verify", parents=[bus_parent])
