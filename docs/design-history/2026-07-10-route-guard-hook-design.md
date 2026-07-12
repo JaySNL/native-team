@@ -218,7 +218,7 @@ Exit `2` is Claude Code's *blocking* error. Exit `1` is not. So the obvious
 settings entry —
 
 ```
-python3 /home/user/Projects/native-team/hooks/team_route_guard.py
+python3 ~/Projects/native-team/hooks/team_route_guard.py
 ```
 
 — means that moving or deleting `native-team`, a repo under active development,
@@ -235,7 +235,7 @@ script is a silent no-op:
 {
   "matcher": "Read|Grep|Glob|Bash",
   "hooks": [{"type": "command",
-             "command": "sh -c 'test -r \"$0\" || exit 0; exec python3 \"$0\"' /home/user/Projects/native-team/hooks/team_route_guard.py",
+             "command": "sh -c 'test -r \"$0\" || exit 0; exec python3 \"$0\"' ~/Projects/native-team/hooks/team_route_guard.py",
              "timeout": 5,
              "statusMessage": "team-route-guard"}]
 }

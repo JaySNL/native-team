@@ -66,7 +66,7 @@ file presence. An MCP-server restart re-adopts every in-flight job by rescanning
   "task_head": "first ~120 chars of the task, for humans",
   "pid": 48213, "started": "2026-07-11T18:04:12Z",
   "heartbeat": "2026-07-11T18:04:18Z", "seq": 42,
-  "result_path": "/home/user/.claude/jobs/j_ab12cd/result.txt",
+  "result_path": "~/.claude/jobs/j_ab12cd/result.txt",
   "digest": null, "err": null }
 ```
 - **States:** `queued → running → done | failed`.

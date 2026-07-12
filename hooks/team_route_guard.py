@@ -14,8 +14,8 @@ Deliberately narrow. It denies reaching INTO a scope; it does not deny a
 repo-wide `Grep` that merely contains one, because that would block the lead
 from reading its own source while any task is open, and a guard that blocks
 ordinary work gets switched off. Hard-deny the clear case, nudge on ambiguity --
-the same rule as ~/.claude/hooks/route-guard.py, from which this borrows its
-stdin/stdout contract.
+the same rule as a standard Claude Code route-guard hook, from which this
+borrows its stdin/stdout contract.
 
 FAILS OPEN. Any error, any surprise, and the tool call proceeds. A broken guard
 must never break a tool call. Disable with TEAM_ROUTE_GUARD=0.

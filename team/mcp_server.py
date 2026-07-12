@@ -5,9 +5,9 @@ not of this tool: `team wait ...; echo` destroys `$?`; `argparse` exits `2`,
 colliding with `PANE_GONE`; `send` prints an id the lead has to parse. A tool
 call has no `$?` to destroy and returns a value rather than a line of text.
 
-Newline-delimited JSON-RPC 2.0 on stdin/stdout, stdlib only. The wire shape is
-copied from `~/.claude/tools/ifz-code-search-mcp.mjs`, which is known to work
-with this Claude Code build rather than merely documented to.
+Newline-delimited JSON-RPC 2.0 on stdin/stdout, stdlib only. The wire shape
+follows a known-good Claude Code MCP stdio server, matched against a build that
+works rather than merely the documented spec.
 
 NOTHING may write to stdout but `_send`. A stray `print` anywhere below is a
 corrupt frame and a dead session; `api` returns strings and never prints, which

@@ -10,7 +10,7 @@
 
 Replicate AionUi's team-mode workflow **natively in terminals**: adjacent panes running
 `claude` (lead) + `qwen agent 1` + `agent 2` + `agent 3` …, with the same live visual feedback
-AionUi gives. the maintainer likes the *working setup* — lead scopes work, grunts execute bounded slices,
+AionUi gives. The maintainer likes the *working setup* — lead scopes work, grunts execute bounded slices,
 lead synthesizes — and wants it without the Electron app.
 
 ## The core insight, before you design anything
@@ -120,12 +120,12 @@ From `~/.claude/LOCAL_LLM_ROUTING.md` and `~/.claude/CLAUDE.md`:
 | Tool | What it does |
 |---|---|
 | `llc` (`~/.claude/tools/llc.py`, on PATH) | Slice-delegate. `llc File.cs:1840-1920 "task"`. Bounded slice + one task, no agent harness. Seconds. |
-| `claude-local` / `lll` | Whole agent run against the local Mac model. Zero Anthropic tokens. `--watch` streams to `llm-watch`. |
+| `claude-local` / `lll` | Whole agent run against the local model. Zero Anthropic tokens. `--watch` streams to `llm-watch`. |
 | `llm-watch` | Claude-Code-style **live view** of a `claude-local --watch` run — tools, diffs, holding. |
 | `llm-top` | Live gauge: server + model + MCP/llc jobs. |
 | `local_delegate` MCP | Tier-2 orchestration against the local Ollama. |
 
-**`llm-watch` already solves the "visual feedback" half of the ask.** The Mac (Apple Silicon 48GB, LAN)
+**`llm-watch` already solves the "visual feedback" half of the ask.** The local machine
 runs `qwen3-coder-256k` and `qwen3-thinking-256k`, both Qwen3-30B-A3B MoE @ 256k ctx, ~90-97 tok/s.
 
 **The routing rule that governs all of this:** *"I am overview, local is grunt."* The 30B does not
@@ -169,7 +169,7 @@ AionUi, most work, and it would inherit the design decisions that produced paper
 - Rebuilding `llm-watch`, `llm-top`, `llc`, or `claude-local`.
 - Making grunts smarter. They are 30B models doing bounded lookups. The protocol should assume they
   are wrong and make that cheap to detect (papercut #7), not try to prevent it.
-- Multi-machine orchestration beyond what LAN already gives.
+- Multi-machine orchestration beyond what a LAN/SSH setup already gives.
 
 ---
 

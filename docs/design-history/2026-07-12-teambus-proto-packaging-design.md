@@ -23,6 +23,7 @@ so it can be flipped public later.
 4. Docs: `SERVER.md`, `INSTALL.md`, README overhaul, `STATUS.md`, `examples/README.md`.
 5. `LICENSE` (MIT) + `.github/FUNDING.yml` + README "Support" section.
 6. Git: commit WIP + this work, merge `feat/named-bus`→`master`, push to private origin.
+7. README hero demo GIF (hyperframes) — polished "how it works" explainer.
 
 **Out (documented, not built):**
 - Any bundled model server. TeamBus never ships or launches mlx-serve/ollama.
@@ -135,11 +136,11 @@ Tracked files with leakage (11): the 6 `docs/superpowers/specs/*` design docs, `
 `tests/test_route_guard.py`.
 
 Rules:
-- **Remove** real name/email/usernames (`user`, `redacted`, gmail, the author's real name).
-- **Genericize** personal paths (`/home/<user>`, `~/.claude/...`, `/mnt/nas`, LAN IPs
-  `100.70.x.x`, `:11234` when presented as *the* endpoint) → `~/path/to/...`, `<your-repo>`,
-  `http://localhost:PORT/v1`.
-- **De-rig** hardware boasts (`Apple Silicon 48GB`, `4090`, `LAN` as "my box") → neutral phrasing
+- **Remove** the maintainer's real name, email, and personal usernames.
+- **Genericize** personal filesystem paths (a `/home/<user>/...` prefix, a personal `~/.claude/...`,
+  a NAS mount, LAN/VPN IPs, or a specific `:PORT` presented as *the* endpoint) → `~/path/to/...`,
+  `<your-repo>`, `http://localhost:PORT/v1`.
+- **De-rig** specific-hardware boasts (a named machine/GPU/RAM, a VPN named as "my box") → neutral phrasing
   ("an OpenAI-compatible server on localhost or your LAN").
 - **Keep** public tool/model names (`mlx-serve`, `ollama`, `qwen`, `Qwen3-Coder-*`) — legitimate
   examples, not personal data.
@@ -182,6 +183,27 @@ All commits land on `feat/named-bus`, then the branch merges to `master`:
    into a few commits (e.g. decouple / scrub+relocate / docs+license).
 3. Merge `feat/named-bus` → `master` (feature complete, 471 green, already documented in README).
 4. Push `master` to private origin. **No visibility change.**
+
+## Component 7 — README hero demo GIF (hyperframes)
+
+A polished, modern "how it works" explainer for the README. Authored via the **hyperframes**
+skill (HTML → deterministic video), rendered to MP4, converted to GIF for GitHub inline autoplay
+(MP4 also attachable as a release asset for quality). Built **during implementation, after docs +
+naming settle**, so on-screen labels match final copy.
+
+Story (~15s, terminal-modern aesthetic — mono type, dark panel, cursor/typing motion):
+1. **Title** — two panes: lead `claude`, grunt `qwen`; tagline "coordinated by a directory you
+   can `cat`."
+2. **Bus = a directory** — `.team/inbox/` file appears (pending) → `results/` file (done). Caption:
+   "No daemon. The board is `ls`."
+3. **Flow** — lead sends a bounded slice → grunt returns a citation `protocol.py:10`.
+4. **verify (money shot)** — `team verify` re-reads the file; line 10 ≠ line 8; byte-for-byte
+   compare → **FAIL, exit 1.** Caption: "A grunt's answer isn't trusted until `verify` exits 0."
+5. **CTA** — install one-liner + "you supply the server (see SERVER.md)."
+
+Scope: **one hero GIF** now. Optional short feature loops (named-bus, MCP) are follow-on, not this
+pass. Output lands at `docs/assets/teamchat-demo.gif` (+ `.mp4`), embedded at the top of the README.
+Alternative/complement noted for later: a real VHS/asciinema terminal capture for authenticity.
 
 ## Testing
 

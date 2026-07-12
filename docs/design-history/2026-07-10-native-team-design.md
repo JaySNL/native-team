@@ -23,7 +23,7 @@ no in-session remedy inside AionUi.
 - Rebuilding `llm-watch`, `llm-top`, `llc`, or `claude-local`.
 - Making grunts smarter. They are 30B models doing bounded lookups. The protocol assumes they are
   wrong and makes that cheap to detect, rather than trying to prevent it.
-- Multi-machine orchestration beyond what LAN already provides.
+- Multi-machine orchestration beyond what a LAN/SSH setup already provides.
 - Any `team_*` MCP surface. See "No MCP" below.
 
 ---
@@ -112,7 +112,7 @@ no multiplexer at all.
 
 ### Grunts are long-lived interactive `qwen` panes
 
-The reference grunt is the **`qwen` CLI**, already routed to the Mac's ollama. One to three of them,
+The reference grunt is the **`qwen` CLI**, already routed to a local ollama server. One to three of them,
 spawned as needed. `claude-local` remains a valid `backend` value in `roster.json` — `panes.py` does
 not care what runs in a pane — but qwen is what the design targets.
 
@@ -537,7 +537,7 @@ survive it.
 ## Validation results
 
 Measured 2026-07-10 against `qwen` v0.19.8 and `tmux` 3.7b, before any implementation code was
-written. Environment: Mac ollama reachable, `qwen3-coder-256k:latest`.
+written. Environment: local ollama reachable, `qwen3-coder-256k:latest`.
 
 | # | Assumption | Result |
 |---|---|---|
