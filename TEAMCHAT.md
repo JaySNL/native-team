@@ -68,7 +68,14 @@ lives in a file, it is a `find` task, and the grep is the grunt's job, not yours
 
 ### `team wait [--task NNN ...] [--for lead] [--timeout SECS]`
 
-Blocks. `--task` repeats: `--task 007 --task 009` waits on both.
+Blocks for up to `--timeout` seconds. **Run it in the background** — as a Claude
+Code background Bash task (`run_in_background`), not in the foreground. Foregrounded
+it holds your whole turn doing nothing while the grunt works; backgrounded, your
+turn ends and the harness wakes you when the wait exits. A `PreToolUse` hook denies
+the foreground form and tells you to re-issue it in the background (disable with
+`TEAM_ROUTE_GUARD=0`). This does not apply to the grunts — they have no such hook.
+
+`--task` repeats: `--task 007 --task 009` waits on both.
 
 Prints `SEALED: 007`, `SUPERSEDED: 007`, `TIMEOUT: 007`, or `BLOCKED: 007 ...`.
 

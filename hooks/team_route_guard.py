@@ -177,6 +177,47 @@ def _targets(tool: str, inp: dict) -> list[str]:
     return []
 
 
+_CMD_SEPS = frozenset({";", "|", "||", "&&", "&", "(", "{"})
+
+
+def _foreground_team_wait(tool: str, inp: dict) -> bool:
+    """True when this Bash call is a `team wait` NOT run in the background.
+
+    `team wait` blocks for up to --timeout seconds (documented 600). Foregrounded,
+    it holds the lead's whole turn doing nothing while the grunt works -- the
+    blocker the user kept hitting. `run_in_background` lets the turn end; the
+    harness wakes the lead when the wait exits. Detect an actual `team wait`
+    invocation -- at the command start, or after a shell separator -- not the mere
+    string, so `echo team wait` is not caught.
+    """
+    if tool != "Bash" or inp.get("run_in_background"):
+        return False
+    command = inp.get("command")
+    if not isinstance(command, str):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    for i in range(len(words) - 1):
+        if (Path(words[i]).name == "team" and words[i + 1] == "wait"
+                and (i == 0 or words[i - 1] in _CMD_SEPS)):
+            return True
+    return False
+
+
+def _wait_deny_message() -> str:
+    return (
+        "Don't foreground `team wait` -- it holds this whole turn for up to "
+        "--timeout seconds (documented 600) while the grunt works, and you can do "
+        "nothing until it returns. Re-issue the SAME command in the background "
+        "(run_in_background: true). Your turn ends at once; the harness wakes you "
+        "when the wait exits -- SEALED / SUPERSEDED / BLOCKED / TIMEOUT -- and "
+        "until then you are free to do other work or hand back to the user.\n\n"
+        "Disable this guard with TEAM_ROUTE_GUARD=0."
+    )
+
+
 def decide(payload: dict, env: dict | None = None) -> tuple[str, str, str]:
     """(decision, reason, additional_context). Never raises."""
     env = os.environ if env is None else env
@@ -195,6 +236,12 @@ def decide(payload: dict, env: dict | None = None) -> tuple[str, str, str]:
     root = bus_root(cwd)
     if root is None:
         return "allow", "", ""
+
+    # Independent of any scope, and gated on being in a bus (above): the lead must
+    # never foreground-block on `team wait`. Deny the foreground form; the lead
+    # re-issues the same command in the background.
+    if _foreground_team_wait(tool, inp):
+        return "deny", _wait_deny_message(), ""
 
     scopes = open_scopes(root)
     if not scopes:

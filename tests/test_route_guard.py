@@ -239,10 +239,14 @@ class BashIsTheObviousBypass(_Bus):
         resolves the situation it created."""
         tid = self._task()
         for cmd in (f"team verify {tid}",
-                    "team send grunt1 --question q --scope src --supersede",
-                    f"team wait --task {tid}"):
+                    "team send grunt1 --question q --scope src --supersede"):
             d, _, _ = self._decide("Bash", {"command": cmd})
             self.assertEqual(d, "allow", cmd)
+        # `team wait` is not scope-denied either -- backgrounded, so the separate
+        # wait-must-background guard is also satisfied.
+        d, _, _ = self._decide(
+            "Bash", {"command": f"team wait --task {tid}", "run_in_background": True})
+        self.assertEqual(d, "allow")
 
     def test_an_absolute_team_binary_is_allowed(self):
         self._task()
@@ -452,6 +456,55 @@ class NeverRaises(_Bus):
         self.assertEqual(proc.returncode, 0)
         hso = json.loads(proc.stdout)["hookSpecificOutput"]
         self.assertEqual(hso["permissionDecision"], "allow")
+
+
+class TeamWaitMustBackground(_Bus):
+    """`team wait` blocks for minutes; the lead must background it, not hold its
+    turn. The guard denies the foreground form so the lead re-issues the same
+    command with run_in_background. Gated on being in a bus, and independent of
+    any open scope."""
+
+    def test_foreground_team_wait_is_denied(self):
+        d, reason, _ = self._decide(
+            "Bash", {"command": "team wait --task 001 --timeout 600"})
+        self.assertEqual(d, "deny")
+        self.assertIn("background", reason.lower())
+
+    def test_backgrounded_team_wait_is_allowed(self):
+        d, _, _ = self._decide(
+            "Bash", {"command": "team wait --task 001 --timeout 600",
+                     "run_in_background": True})
+        self.assertEqual(d, "allow")
+
+    def test_the_piped_compound_form_is_still_denied(self):
+        # the exact shape from the report: piped to tail, exit echoed after.
+        d, _, _ = self._decide("Bash", {
+            "command": 'team wait --task 001 --timeout 600 2>&1 | tail -5; echo "EXIT=$?"'})
+        self.assertEqual(d, "deny")
+
+    def test_team_wait_after_a_separator_is_denied(self):
+        d, _, _ = self._decide("Bash", {"command": "cd . && team wait --task 001"})
+        self.assertEqual(d, "deny")
+
+    def test_a_mere_mention_is_not_a_wait(self):
+        d, _, _ = self._decide("Bash", {"command": "echo team wait now"})
+        self.assertEqual(d, "allow")
+
+    def test_other_team_verbs_foreground_are_fine(self):
+        d, _, _ = self._decide("Bash", {"command": "team verify 001"})
+        self.assertEqual(d, "allow")
+
+    def test_outside_a_bus_it_does_not_fire(self):
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(outside, True))
+        d, _, _ = self._decide(
+            "Bash", {"command": "team wait --task 001"}, cwd=outside)
+        self.assertEqual(d, "allow")
+
+    def test_the_kill_switch_allows_a_foreground_wait(self):
+        d, _, _ = self._decide(
+            "Bash", {"command": "team wait --task 001"}, env=OFF)
+        self.assertEqual(d, "allow")
 
 
 if __name__ == "__main__":
