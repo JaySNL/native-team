@@ -64,6 +64,23 @@ def _next_grunt(roster: dict) -> str:
     return f"grunt{n}"
 
 
+def _default_agent() -> str:
+    """Infer the grunt's name from its cwd -- a grunt runs in `<bus>/work/<name>`.
+
+    Grunts are unreliable at passing `--agent`, and a missing one silently
+    attributed a grunt's message/seal to `grunt1` (measured: grunt2's note landed
+    as `from: grunt1`). Reading the worktree path fixes attribution with no flag.
+    Falls back to `grunt1` outside a worktree (the lead's own context)."""
+    try:
+        parts = Path.cwd().resolve().parts
+        for i in range(len(parts) - 2):
+            if parts[i].startswith(".team") and parts[i + 1] == "work":
+                return parts[i + 2]
+    except Exception:
+        pass
+    return "grunt1"
+
+
 def _grunt_env() -> dict:
     """`team` on the new pane's PATH, and the bus it belongs to.
 
@@ -450,11 +467,12 @@ def cmd_result(args, root):
         # Read from a file, never an argv string: a grunt types this into a
         # shell, and a quote or newline in the prose would truncate it silently.
         text = Path(args.from_file).read_text(encoding="utf-8")
-        ops.result_answer(root, args.task, text)
-        print(f"staged answer for {args.task} ({len(text)} chars)")
+        mid = ops.result_answer(root, args.task, text, args.agent)
+        print(f"answered and sealed {args.task} ({len(text)} chars), announced as {mid}")
         return OK
     mid = ops.result_done(root, args.task, args.agent)
-    print(f"sealed {args.task}, announced as {mid}")
+    print(f"task {args.task} already sealed" if mid is None
+          else f"sealed {args.task}, announced as {mid}")
     return OK
 
 
@@ -615,7 +633,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_log)
 
     p = sub.add_parser("msg")
-    p.add_argument("--agent", default="grunt1")
+    p.add_argument("--agent", default=_default_agent())
     p.add_argument("--note", action="store_true")
     p.add_argument("--blocked", action="store_true")
     p.add_argument("--failed", action="store_true")
@@ -635,9 +653,10 @@ def build_parser() -> argparse.ArgumentParser:
     ans.add_argument("--task", required=True)
     ans.add_argument("--from", dest="from_file", required=True, metavar="FILE",
                      help="a file holding the answer; never an argv string")
+    ans.add_argument("--agent", default=_default_agent())
     d = rsub.add_parser("done")
     d.add_argument("--task", required=True)
-    d.add_argument("--agent", default="grunt1")
+    d.add_argument("--agent", default=_default_agent())
     p.set_defaults(fn=cmd_result)
 
     p = sub.add_parser("answer", help="print a sealed ask task's answer",

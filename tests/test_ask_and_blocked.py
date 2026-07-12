@@ -36,6 +36,20 @@ class AskTaskLifecycle(_Bus):
         self.assertEqual(api.answer(self.root, tid),
                          "Energy equals mass times c squared.")
 
+    def test_answer_seals_atomically_no_separate_done(self):
+        # The limbo bug: a grunt staged an answer but never ran the separate
+        # `result done`, so the task sat unsealed and the lead's `team wait`
+        # blocked to timeout. result_answer now seals in one step.
+        tid = ops.compose_ask_task(self.root, "grunt1", "ELI5 E=mc2")
+        mid = ops.result_answer(self.root, tid, "Energy equals mass times c squared.")
+        self.assertIsNotNone(mid)                                     # announced to the lead
+        self.assertTrue(bus.result_path(self.root, tid).exists())     # sealed, no `done` needed
+        self.assertFalse(bus.staging_path(self.root, tid).exists())   # staging consumed
+        self.assertEqual(api.answer(self.root, tid),
+                         "Energy equals mass times c squared.")
+        # a redundant `done` afterwards is a harmless no-op, not an error
+        self.assertIsNone(ops.result_done(self.root, tid, "grunt1"))
+
     def test_verify_on_an_ask_task_is_ok_with_no_citations(self):
         tid = ops.compose_ask_task(self.root, "grunt1", "ELI5 E=mc2")
         self._answer(tid)
@@ -87,9 +101,10 @@ class SealKindsDoNotCross(_Bus):
 
     def test_a_find_task_refuses_a_prose_answer(self):
         tid = ops.compose_task(self.root, "grunt1", "q", [])
-        ops.result_answer(self.root, tid, "some prose")
+        # result_answer seals atomically, so a find task rejects the prose at
+        # answer time -- it seals citations, not prose.
         with self.assertRaises(StateError) as cm:
-            ops.result_done(self.root, tid, "grunt1")
+            ops.result_answer(self.root, tid, "some prose")
         self.assertIn("prose is not a report", str(cm.exception))
 
     def test_an_empty_find_seal_still_refuses(self):

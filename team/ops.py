@@ -190,8 +190,14 @@ def result_add(root: Path, tid: str, rec: dict) -> None:
     bus.write_json(path, {"task": tid, "records": records})
 
 
-def result_answer(root: Path, tid: str, text: str) -> None:
-    """Stage an ask task's prose answer.
+def result_answer(root: Path, tid: str, text: str, agent: str = "grunt1") -> str | None:
+    """Stage an ask task's prose answer **and seal it**, in one step.
+
+    An answer *is* the completion of an ask task -- there is no separate `done`
+    to remember. Forgetting that separate step was the limbo bug: a grunt staged
+    a finished answer, then signalled done some other way (a note), and the task
+    sat staged-but-unsealed while the lead's `team wait` blocked to timeout.
+    Staging then sealing here closes that gap. Returns the announcement id.
 
     Takes text already read from a file, never an argv string: a grunt types
     its commands into a shell inside a TUI, and a multi-paragraph answer
@@ -206,6 +212,7 @@ def result_answer(root: Path, tid: str, text: str) -> None:
     staged = _read_staging(path) if path.exists() else {"task": tid, "records": []}
     staged["answer"] = text
     bus.write_json(path, staged)
+    return result_done(root, tid, agent)
 
 
 def task_kind(root: Path, agent: str, tid: str) -> str:
@@ -217,7 +224,7 @@ def task_kind(root: Path, agent: str, tid: str) -> str:
     return {"ask": "ask", "build": "build"}.get(kind, "find")
 
 
-def result_done(root: Path, tid: str, agent: str) -> str:
+def result_done(root: Path, tid: str, agent: str) -> str | None:
     """Seal staged records into `results/`, then announce -- never the other
     way around. A lead woken by the announcement message must always find
     the result already readable on disk; reversing this order would let the
@@ -227,7 +234,11 @@ def result_done(root: Path, tid: str, agent: str) -> str:
     if bus.is_dead(root, tid):
         raise StateError(f"task {tid} was superseded; its result is rejected")
     if bus.result_path(root, tid).exists():
-        raise StateError(f"task {tid} is already sealed; results are write-once")
+        # Idempotent: already sealed (an ask answer sealed it, then a redundant
+        # `done` arrived, or `done` was retried). The work is done and write-once
+        # is preserved -- do not re-announce; report the no-op so nothing errors
+        # a task into looking failed when it actually completed.
+        return None
 
     kind = task_kind(root, agent, tid)
     staging = bus.staging_path(root, tid)

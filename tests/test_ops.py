@@ -63,12 +63,16 @@ class OpsTest(unittest.TestCase):
         self.assertEqual(msg["type"], "result")
         self.assertEqual(msg["task"], tid)
 
-    def test_result_done_is_write_once(self):
+    def test_result_done_is_idempotent(self):
         tid = ops.compose_task(self.root, "grunt1", "q", [])
         ops.result_add(self.root, tid, dict(REC))
-        ops.result_done(self.root, tid, "grunt1")
-        with self.assertRaises(config.StateError):
-            ops.result_done(self.root, tid, "grunt1")
+        mid = ops.result_done(self.root, tid, "grunt1")
+        self.assertIsNotNone(mid)
+        # A second `done` is an idempotent no-op (returns None), not an error, so
+        # a redundant/retried seal never makes a finished task look failed. The
+        # result stays write-once -- result_add after a seal still refuses
+        # (test_a_sealed_task_takes_no_more_records).
+        self.assertIsNone(ops.result_done(self.root, tid, "grunt1"))
 
     def test_a_sealed_task_takes_no_more_records(self):
         """Measured, task 013: a grunt ran done -> add -> done. The second done

@@ -287,6 +287,22 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class DefaultAgentTest(unittest.TestCase):
+    def test_infers_grunt_name_from_worktree_cwd(self):
+        with mock.patch.object(cli.Path, "cwd",
+                               return_value=Path("/repo/.team/work/grunt2/sub")):
+            self.assertEqual(cli._default_agent(), "grunt2")
+
+    def test_named_bus_worktree_too(self):
+        with mock.patch.object(cli.Path, "cwd",
+                               return_value=Path("/repo/.team-auth/work/grunt5")):
+            self.assertEqual(cli._default_agent(), "grunt5")
+
+    def test_falls_back_to_grunt1_outside_a_worktree(self):
+        with mock.patch.object(cli.Path, "cwd", return_value=Path("/repo/src")):
+            self.assertEqual(cli._default_agent(), "grunt1")
+
+
 class RootResolutionTest(unittest.TestCase):
     """`init`/`down` locate the repo by `.git`; every other verb locates the
     bus by `.team`. The distinction exists so a grunt inside a build task's
