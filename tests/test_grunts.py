@@ -15,7 +15,7 @@ from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 from unittest import mock
 
-from team import bus, cli, config, ops, panes, worktrees
+from team import api, bus, cli, config, ops, panes, worktrees
 from team.config import StateError
 
 
@@ -411,3 +411,39 @@ class BootstrapTest(unittest.TestCase):
         self._boot(grunts=1)
         self.assertEqual(sorted(bus.read_json(bus.roster_path(self.root))),
                          ["grunt1", "lead"])
+
+
+class OwnBusGuard(unittest.TestCase):
+    """A lead may only operate the bus its OWN pane bootstrapped. Every project's
+    bus is `.team`, so a lead whose cwd/env drifted to another project resolves
+    that project's bus -- and would dispatch into it. Measured: a task for
+    ~/teamTest was written to ~/Projects/IFZ-Modding/.team and run by its grunt."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        config.init(self.root)
+        bus.write_json(bus.roster_path(self.root),
+                       {"lead": {"pane": "%1", "backend": "claude",
+                                 "cwd": str(self.root)}})
+
+    def test_refuses_a_pane_that_is_not_this_bus_lead(self):
+        with self.assertRaisesRegex(StateError, "cross-contaminate"):
+            api.assert_own_bus(self.root, pane="%99")
+
+    def test_allows_the_lead_pane(self):
+        api.assert_own_bus(self.root, pane="%1")            # no raise
+
+    def test_dormant_outside_tmux(self):
+        api.assert_own_bus(self.root, pane=None)            # no pane -> no check
+
+    def test_dormant_when_no_roster(self):
+        bus.roster_path(self.root).unlink()
+        api.assert_own_bus(self.root, pane="%99")           # nothing to compare
+
+    def test_send_refuses_from_a_foreign_pane(self):
+        with mock.patch.dict(os.environ, {"TMUX_PANE": "%99"}):
+            with self.assertRaisesRegex(StateError, "cross-contaminate"):
+                api.send(self.root, "grunt1", question="q", scope=["src"])

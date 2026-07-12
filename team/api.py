@@ -10,6 +10,7 @@ Nothing here prints, and nothing here exits. Errors are raised as the exceptions
 `cli.main` already maps to exit codes, so the CLI's behaviour is unchanged by
 construction.
 """
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +30,43 @@ def pane_for(root: Path, agent: str) -> str:
     if not entry:
         raise StateError(f"no agent {agent!r} in roster.json")
     return entry["pane"]
+
+
+def _current_pane() -> str | None:
+    """The tmux pane the caller runs in, or None outside tmux. Split out so a
+    test can assert a pane identity without a real tmux."""
+    return os.environ.get("TMUX_PANE")
+
+
+def assert_own_bus(root: Path, pane: str | None = None) -> None:
+    """Refuse to operate a bus that a DIFFERENT pane bootstrapped.
+
+    Every project's bus is `.team`, so `bus_root()` picks by cwd/$TEAM_ROOT --
+    position, not identity. A lead whose cwd or env drifted to another project
+    would otherwise dispatch straight into it. Measured: a task meant for
+    ~/teamTest was written to ~/Projects/IFZ-Modding/.team and run by its grunt.
+
+    `team up` records the pane that ran it; the lead runs every later verb from
+    that same pane. If the caller's pane differs, this bus is not theirs -- refuse
+    rather than cross-contaminate. Dormant when there is nothing to compare:
+    outside tmux (no pane), or a bus with no lead in its roster (hand-built, or
+    torn down mid-flight).
+    """
+    pane = pane if pane is not None else _current_pane()
+    if not pane:
+        return
+    try:
+        lead = roster(root).get("lead") or {}
+    except (OSError, ValueError):
+        return
+    lead_pane = lead.get("pane")
+    if lead_pane and lead_pane != pane:
+        raise StateError(
+            f"refusing to cross-contaminate: the bus at {bus.team_dir(root)} was "
+            f"started by lead pane {lead_pane} (at {lead.get('cwd')}), but you are "
+            f"pane {pane}. This is not your bus. Run `team` from the project where "
+            f"you did `team up`, or `team up` here first."
+        )
 
 
 @dataclass
@@ -102,6 +140,9 @@ def send(root: Path, agent: str, *, question: str = "", scope=(),
     Raises `panes.PaneError` if the grunt's pane is gone. The caller decides
     what that means: the CLI exits `PANE_GONE`, the MCP server returns isError.
     """
+    # Before anything: this must be OUR bus. A lead whose cwd/env drifted to
+    # another project resolves that project's `.team` and would dispatch into it.
+    assert_own_bus(root)
     # Reject a malformed request before any pane side effect. An ask task with a
     # scope is a category error (a claim about a file is a find task), not a
     # thing to compose and dispatch.

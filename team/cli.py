@@ -380,6 +380,9 @@ def cmd_down(args, root, p=None):
     # `killer` is injected, not imported: config.py must keep working if tmux
     # were swapped out. Without it, `down` would delete every grunt's worktree
     # and leave its qwen running in a directory that no longer exists.
+    # `down` deletes worktrees and kills panes -- doing that to a bus your pane
+    # did not start would tear down another project. Refuse a foreign bus.
+    api.assert_own_bus(root)
     p = p if p is not None else panes.Panes()
     for line in config.down(root, force=args.force, killer=p.kill):
         print(line)
@@ -399,10 +402,14 @@ def cmd_send(args, root, p=None):
     except panes.PaneError as exc:
         print(exc, file=sys.stderr)
         return PANE_GONE
+    # Name the bus and pane, always. The misroute this guards against was silent
+    # because dispatch only ever said "sent task NNN to grunt1" -- never WHERE.
+    box = bus.team_dir(root)
+    pane = api.pane_for(root, r.agent)
     if r.kind == "reply":
-        print(f"replied {r.id} to {r.agent}")
+        print(f"replied {r.id} to {r.agent} (pane {pane}) in {box}")
     else:
-        print(f"sent task {r.id} to {r.agent}")
+        print(f"sent task {r.id} to {r.agent} (pane {pane}) in {box}")
     return OK
 
 
