@@ -95,6 +95,28 @@ class ConfigTest(unittest.TestCase):
         config.grunt_settings(env={"TEAM_GRUNT_MODEL": "x", "TEAM_GRUNT_BASE_URL": "http://h/v1"})
         self.assertEqual(config.GRUNT_SETTINGS, before)
 
+    # -- grunt_backend_status(): first-launch guidance --
+
+    def test_grunt_backend_status_env_wins(self):
+        st = config.grunt_backend_status(env={"TEAM_GRUNT_BASE_URL": "http://h/v1"})
+        self.assertEqual(st, ("env", "http://h/v1"))
+
+    def test_grunt_backend_status_none_then_global(self):
+        with tempfile.TemporaryDirectory() as home:
+            with patch.dict(os.environ, {"HOME": home}, clear=False):
+                # no global CLI config -> setup needed
+                self.assertEqual(config.grunt_backend_status(env={}), ("none", None))
+                self.assertIn("SETUP NEEDED", config._grunt_backend_note(env={}))
+                # a global qwen profile appears -> use it, model surfaced
+                qdir = Path(home) / ".qwen"
+                qdir.mkdir()
+                (qdir / "settings.json").write_text(json.dumps(
+                    {"modelProviders": {"openai": [{"name": "coder"}]}, "model": {"name": "coder"}}))
+                self.assertEqual(config.grunt_backend_status(env={}), ("global", "coder"))
+                note = config._grunt_backend_note(env={})
+                self.assertIn("global ~/.qwen profile", note)
+                self.assertIn("TEAM_GRUNT_MODEL", note)  # can point a CLI at a different model
+
     # -- init: bus tree --
 
     def test_init_creates_bus_dirs(self):

@@ -167,6 +167,48 @@ def grunt_settings(env: dict | None = None) -> dict:
     return s
 
 
+def grunt_backend_status(env: dict | None = None) -> tuple[str, str | None]:
+    """Where a grunt will get its model — for first-launch guidance in `init`.
+
+    Returns one of:
+      ("env", base_url)      TEAM_GRUNT_BASE_URL is set; `grunt_settings` writes a
+                             self-contained provider, so the grunt is ready.
+      ("global", model|None) the grunt CLI's global `~/.qwen/settings.json` already
+                             has a provider (or a pinned model); grunts inherit it.
+      ("none", None)         no backend configured anywhere — the grunt CLI needs
+                             setting up first, or TEAM_GRUNT_BASE_URL needs setting.
+    """
+    env = os.environ if env is None else env
+    if env.get("TEAM_GRUNT_BASE_URL"):
+        return ("env", env["TEAM_GRUNT_BASE_URL"])
+    cfg = Path.home() / ".qwen" / "settings.json"
+    obj = bus._try_read_obj(cfg) if cfg.is_file() else None
+    if isinstance(obj, dict) and (obj.get("modelProviders") or (obj.get("model") or {}).get("name")):
+        return ("global", (obj.get("model") or {}).get("name"))
+    return ("none", None)
+
+
+def _grunt_backend_note(env: dict | None = None) -> str:
+    """A one-line note for `init` output: prompt for CLI setup when no backend
+    exists, or surface the global profile (and how to point a grunt at a
+    different model) when one does."""
+    status, detail = grunt_backend_status(env)
+    if status == "none":
+        return (
+            "SETUP NEEDED: no grunt model backend found. Your grunt CLI (qwen) has no global "
+            "~/.qwen provider and TEAM_GRUNT_BASE_URL is unset. Configure your CLI of choice "
+            "(run `qwen` once and set a model/provider), or set TEAM_GRUNT_BASE_URL to an "
+            "OpenAI-compatible server, before adding grunts. See SERVER.md."
+        )
+    if status == "env":
+        return f"grunt backend: TEAM_GRUNT_BASE_URL -> {detail} (a provider is written for grunts)."
+    model = f" (model {detail})" if detail else ""
+    return (
+        f"grunt backend: using your global ~/.qwen profile{model}. Grunts inherit it; override the "
+        "model per-team with TEAM_GRUNT_MODEL, or point elsewhere with TEAM_GRUNT_BASE_URL."
+    )
+
+
 class StateError(Exception):
     """A bus/config precondition was violated: a stale bus without --force,
     a stale settings backup without --force, or a delete target that could
@@ -314,6 +356,7 @@ def init(root: Path, force: bool = False, wt=None) -> list[str]:
 
     return [
         f"bus ready at {team}",
+        _grunt_backend_note(),
         f"wrote {settings} (grunt: no context files, approvalMode=YOLO). "
         f"A grunt's write tools and shell stay unrestricted; its worktree, not "
         f"this file, is what contains it.",
