@@ -26,7 +26,23 @@ team bootstrap
 `ln -s <path-to>/native-team/bin/team ~/.local/bin/team`
 
 Idempotent. Creates git repo + first commit if none, writes bus, registers
-**your** pane as lead, spawns no grunts. Refuses if dir inside another git repo.
+**your** pane as lead, spawns no grunts.
+
+**The dir you were invoked from IS the project. Bootstrap the bus there.** If it
+refuses with `inside the git repository at <top>`, the invocation dir sits inside
+a bigger repo (common: whole `$HOME` is a git repo). Do NOT let the bus resolve
+to `<top>` — that scatters grunt worktrees across it. Re-run with `--here` so the
+bus lands in the project you're in:
+
+```bash
+team bootstrap --here
+```
+
+`--here` git-inits the invocation dir as its own repo (nested is fine) and puts
+the bus there. **Never bootstrap at `<top>` when `<top>` is `$HOME`.** Only if you
+genuinely cannot tell which dir is the project — e.g. invoked from a repo root
+that spans several — **ASK the user** which dir the team should live in; do not
+guess.
 
 Warns your own `qwen` in this repo now runs YOLO without context files. True.
 `team down` undoes.

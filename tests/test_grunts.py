@@ -348,10 +348,10 @@ class BootstrapTest(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
-    def _boot(self, root=None, grunts=0, force=False):
+    def _boot(self, root=None, grunts=0, force=False, here=False):
         args = type("A", (), dict(grunts=grunts, session="s", lead_pane=None,
                                   force=force, timeout=1.0, command="sh",
-                                  lead_command="sh"))()
+                                  lead_command="sh", here=here))()
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             return cli.cmd_bootstrap(args, root or self.root, p=self.p)
 
@@ -371,6 +371,18 @@ class BootstrapTest(unittest.TestCase):
         with self.assertRaisesRegex(StateError, "inside the git repository"):
             self._boot(root=sub)
         self.assertFalse((sub / ".git").exists())
+
+    def test_here_bootstraps_a_nested_dir_as_its_own_project(self):
+        """--here: the invocation dir IS the project. It git-inits nested, so the
+        bus and every verb resolve here and never climb to the parent repo."""
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        sub = self.root / "nested"
+        sub.mkdir()
+        rc = self._boot(root=sub, here=True)
+        self.assertEqual(rc, cli.OK)
+        self.assertTrue((sub / ".git").is_dir())          # its own repo now
+        self.assertTrue((sub / ".team").is_dir())          # bus lives here
+        self.assertFalse((self.root / ".team").exists())   # parent left alone
 
     def test_it_is_idempotent(self):
         self._boot()

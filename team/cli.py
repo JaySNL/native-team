@@ -191,14 +191,27 @@ def cmd_bootstrap(args, root, p=None):
         wt.init_repo(root)
         actions.append(f"git init {root}")
     elif top.resolve() != root:
-        # `bus_root()` walks up. Without this, bootstrapping a subdirectory of
-        # a repo would create a git repo nested inside another one, while every
-        # other verb kept addressing the parent's bus.
-        raise StateError(
-            f"{root} is inside the git repository at {top}. Bootstrapping here "
-            f"would nest a repo inside a repo, and the bus would still resolve "
-            f"to {top}. Run this at {top}, or in a directory of its own."
-        )
+        # cwd is inside an existing repo. `bus_root()` walks up, so a bus written
+        # here would still resolve to {top}, and grunt worktrees would land at
+        # {top} -- not what someone who ran this *here* meant. Two honest choices,
+        # and we refuse to guess between them rather than silently pick {top}:
+        #   --here        -> the invocation dir IS the project: git-init it as its
+        #                    own repo (nested inside {top} is fine -- git treats the
+        #                    inner .git as the boundary, so every verb now resolves
+        #                    to here and never climbs to {top}).
+        #   cd {top}      -> the enclosing repo is the project; bootstrap there.
+        if getattr(args, "here", False):
+            wt.init_repo(root)
+            actions.append(f"git init {root} (its own repo, nested inside {top})")
+        else:
+            home = f"\n{top} is your HOME directory -- never put a bus there; use " \
+                   f"--here." if top.resolve() == Path.home().resolve() else ""
+            raise StateError(
+                f"{root} is inside the git repository at {top}, so the bus would "
+                f"resolve to {top}, not here. Pick one:\n"
+                f"  team bootstrap --here        # make {root} its own repo, bus here\n"
+                f"  cd {top} && team bootstrap   # bus at the repo root{home}"
+            )
 
     if not wt.has_commit(root):
         try:
@@ -611,6 +624,11 @@ def build_parser() -> argparse.ArgumentParser:
         # can point at a wrapper. Nothing branches on which one is chosen.
         p.add_argument("--lead-command", dest="lead_command", default="claude")
         p.add_argument("--command", default="qwen", help="grunt binary")
+        if verb == "bootstrap":
+            p.add_argument("--here", action="store_true",
+                           help="bootstrap in THIS directory even when it sits "
+                                "inside another git repo: git-init it (nested) and "
+                                "put the bus here, instead of refusing")
         p.set_defaults(fn=fn)
 
     g = sub.add_parser("grunt").add_subparsers(dest="gcmd", required=True)
