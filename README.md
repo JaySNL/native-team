@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/banner.png" alt="native-team" width="900">
+</p>
+
 # native-team
 
 Run a `claude` lead and interactive `qwen` grunts in adjacent tmux panes, coordinated by a
@@ -59,7 +63,17 @@ finished tasks still read `pending`.)
 announcement is written to the lead's inbox, so a lead woken by an announcement always finds the
 result already on disk.
 
+<p align="center">
+  <img src="docs/assets/teamchat-inbox.gif" width="720"
+       alt="A task travels out to a grunt as inbox/grunt/001.json (pending); the reply is sealed into results/001.json (sealed) and announced into inbox/lead/001.json (reply). The board is ls .team/inbox.">
+</p>
+
 `team wait` blocks, and its **exit code is the wake signal**. Background it from the lead.
+
+<p align="center">
+  <img src="docs/assets/teamchat-offhand.gif" width="720"
+       alt="The lead backgrounds team wait and sleeps — it never polls; the grunt seals then announces, and the exit-0 doorbell wakes the idle lead.">
+</p>
 
 | Exit | Meaning |
 |---|---|
