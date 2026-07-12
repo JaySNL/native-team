@@ -50,6 +50,13 @@ def blocker(root: Path, tid: str) -> dict | None:
 
 
 ANSWER_FILE = "ANSWER.md"
+# Grace on the reap's staleness fence: an answer file whose mtime predates the
+# task's dispatch by more than this cannot belong to the task (it is a prior
+# task's leftover), so it is skipped. The margin absorbs filesystem mtime
+# resolution and small clock skew; a genuinely stale prior answer predates
+# dispatch by whole seconds, well outside it. Backstop to the dispatch-time
+# truncation in ops.compose_ask_task -- the two are independent guards.
+REAP_SKEW = 2.0
 
 
 def _reap_answer(root: Path, tid: str, seen: dict) -> bool:
@@ -93,6 +100,8 @@ def _reap_answer(root: Path, tid: str, seen: dict) -> bool:
                 continue
             if st.st_size == 0:
                 continue
+            if st.st_mtime < obj.get("dispatched_at", 0) - REAP_SKEW:
+                continue                  # a prior task's leftover, not this one's
             key = f"{tid}:{ans}"
             prev = seen.get(key)
             seen[key] = st.st_mtime
@@ -101,7 +110,7 @@ def _reap_answer(root: Path, tid: str, seen: dict) -> bool:
             text = ans.read_text(encoding="utf-8", errors="replace")
             if not text.strip():
                 return False
-            ops.result_answer(root, tid, text, agent)
+            ops.result_answer(root, tid, text, agent, reaped=True)
             return True
     except Exception:
         # Already sealed (a grunt that DID seal raced us), a corrupt task file,

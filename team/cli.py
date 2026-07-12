@@ -510,7 +510,8 @@ def cmd_wait(args, root):
 
     r = api.wait_tasks(root, args.task, timeout=args.timeout)
     for tid in r.sealed:
-        print(f"SEALED: {tid}")
+        reaped = (bus._try_read_obj(bus.result_path(root, tid)) or {}).get("sealed_by") == "reap"
+        print(f"SEALED (reaped): {tid}" if reaped else f"SEALED: {tid}")
     for tid in r.superseded:
         print(f"SUPERSEDED: {tid}")
     for msg in r.blocked:

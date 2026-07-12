@@ -133,6 +133,51 @@ class LeadReapsStrandedAnswer(_Bus):
         self.assertEqual(r.answers[tid], "the whole point")
         self.assertTrue(r.ok)
 
+    def test_reap_will_not_seal_a_prior_tasks_answer(self):
+        # THE reported bug: a slow grunt's back-to-back tasks share one scratch
+        # ANSWER.md; a reap for task B captured task A's still-resident answer and
+        # sealed B with it, minutes before B was written. Dispatch now clears the
+        # file (and stamps a staleness fence), so B can never inherit A's answer.
+        a = ops.compose_ask_task(self.root, "grunt1", "question A")
+        self._write_answer("grunt1", "ANSWER FOR A")
+        seen = {}
+        wait._reap_answer(self.root, a, seen)
+        wait._reap_answer(self.root, a, seen)
+        self.assertEqual(api.answer(self.root, a), "ANSWER FOR A")
+
+        # task B to the same grunt; B's real answer is not written yet
+        b = ops.compose_ask_task(self.root, "grunt1", "question B")
+        seen_b = {}
+        self.assertFalse(wait._reap_answer(self.root, b, seen_b))
+        self.assertFalse(wait._reap_answer(self.root, b, seen_b))
+        self.assertFalse(bus.result_path(self.root, b).exists(),
+                         "task B was sealed with task A's stale answer")
+
+        # once the grunt writes B's real answer, the reap seals THAT
+        self._write_answer("grunt1", "ANSWER FOR B")
+        wait._reap_answer(self.root, b, seen_b)
+        wait._reap_answer(self.root, b, seen_b)
+        self.assertEqual(api.answer(self.root, b), "ANSWER FOR B")
+
+    def test_dispatch_clears_a_prior_answer_file(self):
+        self._write_answer("grunt1", "leftover from a prior task")
+        ops.compose_ask_task(self.root, "grunt1", "new question")
+        self.assertEqual(
+            (worktrees.path(self.root, "grunt1") / "ANSWER.md").read_text(encoding="utf-8"),
+            "", "dispatch must truncate the prior task's answer file")
+
+    def test_reaped_seal_is_marked_grunt_seal_is_not(self):
+        a = ops.compose_ask_task(self.root, "grunt1", "q")
+        self._write_answer("grunt1", "reaped answer")
+        seen = {}
+        wait._reap_answer(self.root, a, seen)
+        wait._reap_answer(self.root, a, seen)
+        self.assertEqual(bus.read_json(bus.result_path(self.root, a)).get("sealed_by"), "reap")
+        # a grunt's own seal carries no reap marker
+        b = ops.compose_ask_task(self.root, "grunt1", "q2")
+        ops.result_answer(self.root, b, "grunt-sealed answer")
+        self.assertIsNone(bus.read_json(bus.result_path(self.root, b)).get("sealed_by"))
+
 
 class AnswerRendersToTerminal(_Bus):
     """`team answer` puts an ask grunt's prose on the human's terminal, not into

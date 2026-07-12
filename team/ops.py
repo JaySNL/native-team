@@ -9,6 +9,7 @@ by whichever caller drives both this module and `panes.Panes` together (the
 halts the turn -- see `panes.py`'s docstring). Keep tmux vocabulary out of
 this module.
 """
+import time
 from pathlib import Path
 
 from team import bus, protocol, schema, worktrees
@@ -123,6 +124,16 @@ def compose_ask_task(root: Path, agent: str, question: str,
 
     tid = bus.alloc_id(root)
     answer_path = worktrees.path(root, agent) / ANSWER_FILE
+    # Clear the prior task's answer off BOTH reap-candidate paths (worktree +
+    # inbox fallback, see wait._reap_answer) so a lead-side reap for THIS task can
+    # never snapshot a stale-but-complete answer from the last one and seal it as
+    # this task's -- the bug that reported task 007's result as task 005's. An
+    # empty file trips the reap's own size==0 skip. `dispatched_at` is the reap's
+    # staleness fence: an answer older than dispatch cannot belong to this task.
+    dispatched_at = time.time()
+    for stale in (answer_path, bus.team_dir(root) / "inbox" / agent / ANSWER_FILE):
+        if stale.exists():
+            stale.write_text("", encoding="utf-8")
     bus.write_json(bus.task_path(root, agent, tid), {
         "id": tid,
         "kind": "ask",
@@ -131,6 +142,7 @@ def compose_ask_task(root: Path, agent: str, question: str,
         "question": question,
         "scope": [],
         "answer_file": str(answer_path),
+        "dispatched_at": dispatched_at,
         "protocol": protocol.ask_body(tid, question, str(answer_path)),
     })
     return tid
@@ -194,7 +206,8 @@ def result_add(root: Path, tid: str, rec: dict) -> None:
     bus.write_json(path, {"task": tid, "records": records})
 
 
-def result_answer(root: Path, tid: str, text: str, agent: str = "grunt1") -> str | None:
+def result_answer(root: Path, tid: str, text: str, agent: str = "grunt1",
+                  reaped: bool = False) -> str | None:
     """Stage an ask task's prose answer **and seal it**, in one step.
 
     An answer *is* the completion of an ask task -- there is no separate `done`
@@ -216,7 +229,7 @@ def result_answer(root: Path, tid: str, text: str, agent: str = "grunt1") -> str
     staged = _read_staging(path) if path.exists() else {"task": tid, "records": []}
     staged["answer"] = text
     bus.write_json(path, staged)
-    return result_done(root, tid, agent)
+    return result_done(root, tid, agent, reaped=reaped)
 
 
 def task_kind(root: Path, agent: str, tid: str) -> str:
@@ -228,7 +241,7 @@ def task_kind(root: Path, agent: str, tid: str) -> str:
     return {"ask": "ask", "build": "build"}.get(kind, "find")
 
 
-def result_done(root: Path, tid: str, agent: str) -> str | None:
+def result_done(root: Path, tid: str, agent: str, reaped: bool = False) -> str | None:
     """Seal staged records into `results/`, then announce -- never the other
     way around. A lead woken by the announcement message must always find
     the result already readable on disk; reversing this order would let the
@@ -291,6 +304,11 @@ def result_done(root: Path, tid: str, agent: str) -> str | None:
         schema.validate_record(rec)
     payload["kind"] = kind
     payload["agent"] = agent
+    if reaped:
+        # A heuristic lead-side seal, not a grunt's own -- record it so `team
+        # wait` can show `SEALED (reaped)` and the lead can tell a best-effort
+        # seal from a genuine one.
+        payload["sealed_by"] = "reap"
 
     # Seal before announce: the lead must never wake to a result that
     # does not yet exist on disk.
