@@ -12,7 +12,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from team import api, bus, config, ops, wait
+from team import api, bus, config, ops, wait, worktrees
 from team.config import StateError
 
 
@@ -73,6 +73,65 @@ class AskTaskLifecycle(_Bus):
         tid = ops.compose_ask_task(self.root, "grunt1", "q")
         with self.assertRaises(StateError):
             ops.result_answer(self.root, tid, "   \n  ")
+
+
+class LeadReapsStrandedAnswer(_Bus):
+    """The limbo the reap exists to end: a grunt writes its answer file, goes
+    idle, and never runs a seal command -- there no longer is one for it to run.
+    The lead must seal the file itself rather than block to timeout waiting on a
+    grunt command that will never come."""
+
+    def _write_answer(self, agent, text):
+        wt = worktrees.path(self.root, agent)
+        wt.mkdir(parents=True, exist_ok=True)
+        (wt / "ANSWER.md").write_text(text, encoding="utf-8")
+
+    def test_reap_seals_a_stable_answer_on_the_second_sighting(self):
+        tid = ops.compose_ask_task(self.root, "grunt1", "ELI5 E=mc2")
+        self._write_answer("grunt1", "Energy equals mass times c squared.")
+        seen = {}
+        # first sighting: not proven stable yet, so nothing is sealed
+        self.assertFalse(wait._reap_answer(self.root, tid, seen))
+        self.assertFalse(bus.result_path(self.root, tid).exists())
+        # mtime unchanged since last tick -> the lead seals it, as the grunt
+        self.assertTrue(wait._reap_answer(self.root, tid, seen))
+        self.assertTrue(bus.result_path(self.root, tid).exists())
+        self.assertEqual(api.answer(self.root, tid),
+                         "Energy equals mass times c squared.")
+        self.assertEqual(bus.read_json(bus.result_path(self.root, tid))["agent"],
+                         "grunt1")
+
+    def test_reap_is_a_no_op_once_sealed(self):
+        tid = ops.compose_ask_task(self.root, "grunt1", "q")
+        self._write_answer("grunt1", "an answer")
+        seen = {}
+        wait._reap_answer(self.root, tid, seen)
+        wait._reap_answer(self.root, tid, seen)                    # seals here
+        self.assertFalse(wait._reap_answer(self.root, tid, seen))  # already sealed
+
+    def test_reap_will_not_seal_a_find_task_from_a_stray_file(self):
+        tid = ops.compose_task(self.root, "grunt1", "q", ["src"])
+        self._write_answer("grunt1", "not a citation")  # a find task seals records
+        seen = {}
+        self.assertFalse(wait._reap_answer(self.root, tid, seen))
+        self.assertFalse(wait._reap_answer(self.root, tid, seen))
+        self.assertFalse(bus.result_path(self.root, tid).exists())
+
+    def test_reap_never_seals_a_blank_file(self):
+        tid = ops.compose_ask_task(self.root, "grunt1", "q")
+        self._write_answer("grunt1", "   \n  ")
+        seen = {}
+        self.assertFalse(wait._reap_answer(self.root, tid, seen))
+        self.assertFalse(wait._reap_answer(self.root, tid, seen))
+        self.assertFalse(bus.result_path(self.root, tid).exists())
+
+    def test_wait_tasks_returns_a_reaped_answer(self):
+        tid = ops.compose_ask_task(self.root, "grunt1", "ELI5 E=mc2")
+        self._write_answer("grunt1", "the whole point")
+        r = api.wait_tasks(self.root, [tid], timeout=3.0)
+        self.assertEqual(r.sealed, [tid])
+        self.assertEqual(r.answers[tid], "the whole point")
+        self.assertTrue(r.ok)
 
 
 class TheScopeFence(_Bus):

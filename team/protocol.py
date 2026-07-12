@@ -63,15 +63,17 @@ the wrong kind of task -- say so and stop:
 
     team msg --blocked --task {tid} "this needs code; re-send as --type find"
 
-HOW TO REPORT -- write the answer to a file, then hand over the file.
-Your answer is prose. Prose does not survive being typed into a shell as an
-argument: a quote or a newline will silently truncate it.
+HOW TO REPORT -- your whole deliverable is ONE file. Write it, then STOP.
 
-    1. Write your full answer to ANSWER.md in the current directory.
-    2. team result answer --task {tid} --from ANSWER.md
-    3. team result done --task {tid}
+    Write your full answer to this exact path:
+        {answer_path}
 
-ANSWER.md is a new file in your own worktree. Creating it is allowed; that is
+Then you are done. Do NOT type the answer into a shell (a quote or a newline
+would silently truncate it) and do NOT run any seal command -- there is none to
+run. Your lead reads that file and seals it for you. The moment the file exists
+and is complete, the task is finished: stop and wait for the next one.
+
+That path is a new file in your own worktree. Creating it is allowed; that is
 what it is for. Do not modify any file that was already there.
 """
 
@@ -167,8 +169,9 @@ def task_body(tid: str, question: str, scope: list[str]) -> str:
     return TEMPLATE.format(tid=tid, question=question.strip(), scope=scope_text)
 
 
-def ask_body(tid: str, question: str) -> str:
-    return ASK_TEMPLATE.format(tid=tid, question=question.strip())
+def ask_body(tid: str, question: str, answer_path: str) -> str:
+    return ASK_TEMPLATE.format(tid=tid, question=question.strip(),
+                               answer_path=answer_path)
 
 
 def build_body(tid: str, question: str, workdir: str, create: list[str],

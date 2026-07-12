@@ -49,6 +49,68 @@ def blocker(root: Path, tid: str) -> dict | None:
     return None
 
 
+ANSWER_FILE = "ANSWER.md"
+
+
+def _reap_answer(root: Path, tid: str, seen: dict) -> bool:
+    """Seal an ask grunt's written answer when the grunt itself never did.
+
+    An ask grunt's whole deliverable is ANSWER.md in its worktree; running a
+    seal command afterward is a tail step a 30B grunt drops. Measured: it wrote
+    the file, went idle, and qwen's rotating ghost placeholder showed an unrun
+    `team result answer` in the input line -- which reads exactly like a command
+    it ran and is not. With no lead-side reap the task then sat unsealed and the
+    lead's `team wait` blocked to timeout. So the lead seals the file directly.
+
+    `seen` carries each answer file's mtime across poll ticks: a file is reaped
+    only once its mtime has held steady from the previous tick, so a half-written
+    answer is never sealed mid-write. Everything here is best-effort and fails
+    closed -- a reap that cannot run must never break the wait it rides inside,
+    so any error just leaves the task pending for the next tick or the timeout.
+    """
+    if bus.result_path(root, tid).exists() or bus.is_dead(root, tid):
+        return False
+    try:
+        from team import ops, worktrees
+        tf = bus.find_task_file(root, tid)
+        if tf is None:
+            return False
+        obj = bus._try_read_obj(tf)
+        if not obj or obj.get("kind") != "ask":
+            return False
+        agent = obj.get("to")
+        if not agent:
+            return False
+        # Primary: the exact path the task told the grunt to write. Fallback:
+        # the agent inbox, where a grunt that misread "your worktree" has been
+        # seen to drop the file instead. First one that exists wins.
+        cands = [worktrees.path(root, agent) / ANSWER_FILE,
+                 bus.team_dir(root) / "inbox" / agent / ANSWER_FILE]
+        for ans in cands:
+            try:
+                st = ans.stat()
+            except OSError:
+                continue
+            if st.st_size == 0:
+                continue
+            key = f"{tid}:{ans}"
+            prev = seen.get(key)
+            seen[key] = st.st_mtime
+            if prev != st.st_mtime:
+                return False              # first sighting, or still writing: wait a tick
+            text = ans.read_text(encoding="utf-8", errors="replace")
+            if not text.strip():
+                return False
+            ops.result_answer(root, tid, text, agent)
+            return True
+    except Exception:
+        # Already sealed (a grunt that DID seal raced us), a corrupt task file,
+        # a torn read -- none of it is the wait's problem. Report only whether a
+        # result now exists on disk, and let the loop re-evaluate.
+        return bus.result_path(root, tid).exists()
+    return False
+
+
 def _resolved(root: Path, tid: str) -> bool:
     return (bus.result_path(root, tid).exists() or bus.is_dead(root, tid)
             or blocker(root, tid) is not None)
@@ -60,7 +122,13 @@ def for_tasks(root: Path, tids: list[str], timeout: float, poll: float = POLL,
     """(sealed, missing, blocked). `blocked` holds the messages themselves,
     because the lead needs the message id to reply to it."""
     deadline = now() + timeout
+    seen: dict = {}
     while True:
+        # The lead seals any ask answer whose grunt wrote the file but never ran
+        # a seal (see `_reap_answer`). Done before the pending check so a reap
+        # this tick lets the loop exit on the same tick, not one poll later.
+        for t in tids:
+            _reap_answer(root, t, seen)
         pending = [t for t in tids if not _resolved(root, t)]
         if not pending or now() >= deadline:
             break

@@ -11,8 +11,10 @@ this module.
 """
 from pathlib import Path
 
-from team import bus, protocol, schema
+from team import bus, protocol, schema, worktrees
 from team.config import StateError
+
+ANSWER_FILE = "ANSWER.md"
 
 
 def _messages(root: Path) -> list[dict]:
@@ -120,6 +122,7 @@ def compose_ask_task(root: Path, agent: str, question: str,
         bus.mark_dead(root, open_tid)
 
     tid = bus.alloc_id(root)
+    answer_path = worktrees.path(root, agent) / ANSWER_FILE
     bus.write_json(bus.task_path(root, agent, tid), {
         "id": tid,
         "kind": "ask",
@@ -127,7 +130,8 @@ def compose_ask_task(root: Path, agent: str, question: str,
         "from": "lead",
         "question": question,
         "scope": [],
-        "protocol": protocol.ask_body(tid, question),
+        "answer_file": str(answer_path),
+        "protocol": protocol.ask_body(tid, question, str(answer_path)),
     })
     return tid
 
@@ -312,9 +316,9 @@ def _nothing_to_seal(tid: str, kind: str) -> str:
     blocked. It never learned what the exits were, because nothing named them.
     """
     if kind == "ask":
-        return (f"task {tid} has no staged answer; nothing to seal. Write your "
-                f"answer to ANSWER.md, then: "
-                f"team result answer --task {tid} --from ANSWER.md")
+        return (f"task {tid} is an ask task -- you do not seal it. Write your "
+                f"full answer to the ANSWER.md path named in the task, then "
+                f"stop: your lead reads that file and seals it for you.")
     return (f"task {tid} has no staged records; nothing to seal. Add a citation "
             f"with `team result add --task {tid} --file <path> --line <n> "
             f"--symbol <name> --evidence '<the exact source line>'`. If the "

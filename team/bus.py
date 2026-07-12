@@ -188,6 +188,28 @@ def lead_inbox(root: Path) -> Path:
     return team_dir(root) / "inbox" / "lead"
 
 
+def find_task_file(root: Path, tid: str) -> Path | None:
+    """Locate a task's inbox file by id, across every agent inbox but `lead`.
+
+    The lead addresses a task by its three-digit id alone; which grunt it went
+    to is recorded inside the file, not in the id. `wait`'s reap needs that
+    grunt back (to find its worktree and attribute the seal), so it looks the
+    task up here rather than being handed the agent it never kept.
+    """
+    if not ID_RE.fullmatch(tid):
+        return None
+    inbox = team_dir(root) / "inbox"
+    if not inbox.is_dir():
+        return None
+    for box in sorted(inbox.iterdir()):
+        if not box.is_dir() or box.name == "lead":
+            continue
+        cand = box / f"{tid}.json"
+        if cand.is_file():
+            return cand
+    return None
+
+
 def result_path(root: Path, tid: str) -> Path:
     return team_dir(root) / "results" / f"{tid}.json"
 
