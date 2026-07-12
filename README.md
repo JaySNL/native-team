@@ -10,6 +10,27 @@ to a live grunt it caught one: qwen cited `team/protocol.py:10` for a symbol tha
 
 That check is the reason this exists. The tmux plumbing is the easy part.
 
+<p align="center">
+  <img src="docs/assets/teamchat-demo.gif" width="720"
+       alt="A lead delegates a scoped task to a grunt; team verify re-reads the cited line, finds it one line off, and fails closed.">
+</p>
+
+## What's included, and what you supply
+
+This repo is the **bus comms** — the coordination layer — and it works out of the box. The model a
+grunt runs on, the guardrails, and the grunt's behavioral rules are yours, because they are your
+policy, not the tool's.
+
+| Included (works on clone) | You supply (documented) |
+|---|---|
+| lead↔grunt file bus, seal-then-announce | an OpenAI-compatible model server → [SERVER.md](SERVER.md) |
+| `verify` (byte-for-byte citation check) | the grunt CLI (`qwen`) and lead CLI (`claude`) |
+| tmux panes, worktree isolation, death hooks | guardrails (route-guard hook) → [`examples/`](examples/) |
+| named buses, `TEAM_ROOT`, MCP wrapper | grunt behavioral rules → [`examples/`](examples/) |
+
+New here? Read [INSTALL.md](INSTALL.md) (prerequisites + setup) and [SERVER.md](SERVER.md) (point a
+grunt at mlx-serve, ollama, or anything OpenAI-compatible).
+
 ## Quickstart
 
     team init                                          # create .team/, install grunt qwen settings
@@ -24,7 +45,8 @@ Install once:
     ln -sf "$PWD/bin/team" ~/.local/bin/team
     ln -sf "$PWD/bin/team-up" ~/.local/bin/team-up
 
-`team` and `team-up` run from inside whatever repo they manage, not from here.
+`team` and `team-up` run from inside whatever repo they manage, not from here. A grunt needs a
+model server — set `TEAM_GRUNT_BASE_URL` / `TEAM_GRUNT_MODEL` first; see [SERVER.md](SERVER.md).
 
 ## How it works
 
@@ -123,15 +145,29 @@ won't reach it, even through a `/mcp` reconnect:
 
 ## Docs
 
-- Design: `docs/superpowers/specs/2026-07-10-native-team-design.md`
+- Install & prerequisites: [INSTALL.md](INSTALL.md)
+- The model server (you supply it): [SERVER.md](SERVER.md)
+- Project status & scope: [STATUS.md](STATUS.md)
+- Design rationale: `docs/design-history/`
 - Why not a tmux MCP server, `tmux wait-for`, or control mode: `docs/tmux-capabilities.md`
 - What AionUi's daemon taught us: `docs/prior-art-aionui.md`
 - Live validation results: `docs/validation-phase1.md`
-- The nine papercuts this answers: `HANDOFF.md`
+- The papercuts this answers: `HANDOFF.md`
 
 ## Development
 
     python3 -m unittest discover -s tests -t .
 
-200 tests, stdlib only, no pytest. The end-to-end test drives a real tmux session with a scripted
+475 tests, stdlib only, no pytest. The end-to-end test drives a real tmux session with a scripted
 grunt, and is skipped only if tmux is absent.
+
+## Support
+
+TeamBus is free and MIT-licensed. If it saves you context or tokens, consider buying me a coffee —
+it directly funds development. Bug reports and PRs are welcome too.
+
+<a href="https://ko-fi.com/jaymade88" target="_blank"><img height="36" src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi"></a>
+
+## License
+
+[MIT](LICENSE).
