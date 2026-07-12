@@ -202,9 +202,12 @@ def _grunt_backend_note(env: dict | None = None) -> str:
         )
     if status == "env":
         return f"grunt backend: TEAM_GRUNT_BASE_URL -> {detail} (a provider is written for grunts)."
-    model = f" (model {detail})" if detail else ""
+    # Report the model the grunt actually runs (the pinned grunt_settings model),
+    # not the caller's global default -- a grunt is pinned and does not follow the
+    # interactive default in ~/.qwen.
+    model = grunt_settings(env)["model"]["name"]
     return (
-        f"grunt backend: using your global ~/.qwen profile{model}. Grunts inherit it; override the "
+        f"grunt backend: using your global ~/.qwen providers; grunts run model {model}. Override the "
         "model per-team with TEAM_GRUNT_MODEL, or point elsewhere with TEAM_GRUNT_BASE_URL."
     )
 

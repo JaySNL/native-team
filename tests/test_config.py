@@ -114,7 +114,9 @@ class ConfigTest(unittest.TestCase):
                     {"modelProviders": {"openai": [{"name": "coder"}]}, "model": {"name": "coder"}}))
                 self.assertEqual(config.grunt_backend_status(env={}), ("global", "coder"))
                 note = config._grunt_backend_note(env={})
-                self.assertIn("global ~/.qwen profile", note)
+                self.assertIn("global ~/.qwen", note)
+                # reports the actual pinned grunt model, not the caller's global default
+                self.assertIn(config.grunt_settings(env={})["model"]["name"], note)
                 self.assertIn("TEAM_GRUNT_MODEL", note)  # can point a CLI at a different model
 
     # -- init: bus tree --
