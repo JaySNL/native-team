@@ -26,23 +26,18 @@ team bootstrap
 `ln -s <path-to>/native-team/bin/team ~/.local/bin/team`
 
 Idempotent. Creates git repo + first commit if none, writes bus, registers
-**your** pane as lead, spawns no grunts.
+**your** pane as lead, spawns no grunts. The one setup verb — there is no separate
+`team init` to run.
 
-**The dir you were invoked from IS the project. Bootstrap the bus there.** If it
-refuses with `inside the git repository at <top>`, the invocation dir sits inside
-a bigger repo (common: whole `$HOME` is a git repo). Do NOT let the bus resolve
-to `<top>` — that scatters grunt worktrees across it. Re-run with `--here` so the
-bus lands in the project you're in:
-
-```bash
-team bootstrap --here
-```
-
-`--here` git-inits the invocation dir as its own repo (nested is fine) and puts
-the bus there. **Never bootstrap at `<top>` when `<top>` is `$HOME`.** Only if you
-genuinely cannot tell which dir is the project — e.g. invoked from a repo root
-that spans several — **ASK the user** which dir the team should live in; do not
-guess.
+**The dir you were invoked from IS the project, and `bootstrap` pins everything
+there — the bus lives where you start it, never up the tree.** If that dir sits
+inside a bigger repo (common: the whole `$HOME` is a git repo), `bootstrap` does
+NOT refuse and does NOT write the bus to the parent: it git-inits **here** (nested
+is fine — the inner `.git` is the boundary) and prints a `NOTE:` saying so, naming
+`cd <parent>` if the enclosing repo was what you meant. Read that NOTE and relay it
+to the user. If the invocation dir genuinely was the wrong place, `team down` and
+re-bootstrap where you meant; otherwise you are done. Pass `team bootstrap --here`
+only to silence the NOTE when you already know here is right.
 
 Warns your own `qwen` in this repo now runs YOLO without context files. True.
 `team down` undoes.

@@ -79,8 +79,9 @@ def resolve_bus_name(cli_flag: str | None = None, start: Path | None = None) -> 
 
 
 def repo_root(start: Path | None = None) -> Path:
-    """The enclosing git repository. Used only by `init` and `down`, which run
-    before the bus exists or while destroying it."""
+    """The enclosing git repository. Used only by `down`, which walks up to find
+    the bus it is tearing down. (`init`/`bootstrap` pin the cwd instead -- the bus
+    lives where you start it, never up the tree.)"""
     cur = (start or Path.cwd()).resolve()
     for cand in [cur, *cur.parents]:
         if (cand / ".git").exists():
@@ -113,7 +114,9 @@ def bus_root(start: Path | None = None) -> Path:
         if (cand / name).is_dir():
             return cand
     raise BusError(
-        f"no {name}/ bus found in {cur} or any parent. Run `team init` first."
+        f"no {name}/ bus found in {cur} or any parent. Run `team bootstrap` here "
+        f"first -- it sets up the repo, the bus, and you as the lead, in this "
+        f"directory."
     )
 
 
@@ -168,7 +171,7 @@ def alloc_id(root: Path) -> str:
     taken = [int(p.name) for p in ids.iterdir() if ID_RE.fullmatch(p.name)]
     n = max(taken, default=0) + 1
     if n > 999:
-        raise BusError("task id space exhausted (max 999 per bus); run `team down` and `team init`")
+        raise BusError("task id space exhausted (max 999 per bus); run `team down` and `team bootstrap`")
     while True:
         try:
             fd = os.open(ids / f"{n:03d}", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
@@ -177,7 +180,7 @@ def alloc_id(root: Path) -> str:
         except FileExistsError:
             n += 1
             if n > 999:
-                raise BusError("task id space exhausted (max 999 per bus); run `team down` and `team init`")
+                raise BusError("task id space exhausted (max 999 per bus); run `team down` and `team bootstrap`")
 
 
 def task_path(root: Path, agent: str, tid: str) -> Path:

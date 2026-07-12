@@ -17,17 +17,22 @@ from team.schema import SchemaError
 
 OK, VERIFY_FAIL, PANE_GONE, REFUSED, TIMEOUT, BLOCKED = 0, 1, 2, 3, 4, 5
 
-# `init` runs before a bus exists and `down` destroys one, so both locate the
-# repo by `.git`. Every other verb addresses an existing bus and must find it by
-# `.team`: a grunt running a build task sits in a git worktree under
-# `.team/work/<agent>`, and `repo_root` would stop at that worktree's own `.git`
-# file and address a bus that isn't there.
-PRE_BUS_COMMANDS = frozenset({"init", "down"})
+# `down` destroys a bus, so it locates the repo by `.git`, walking up to find it.
+# Every other verb addresses an existing bus and must find it by `.team`: a grunt
+# running a build task sits in a git worktree under `.team/work/<agent>`, and
+# `repo_root` would stop at that worktree's own `.git` file and address a bus that
+# isn't there.
+PRE_BUS_COMMANDS = frozenset({"down"})
 
-# `bootstrap` runs before a bus AND before a repo: `repo_root()` would raise,
-# or worse, walk up and hand back the enclosing repo. It takes cwd, and refuses
-# on its own terms if cwd turns out to be inside someone else's repo.
-CWD_COMMANDS = frozenset({"bootstrap"})
+# `bootstrap` (porcelain) and `init` (plumbing, hidden) both run before a bus and
+# live by ONE rule the user has stated repeatedly: the bus lives WHERE YOU START
+# IT, never up the tree. So they take cwd -- NOT `repo_root()`, which walks up and
+# once wrote the bus to $HOME for a scratch dir under it. `bootstrap` is the sole
+# setup verb users see: `_pin_repo_here` makes the cwd its own git repo (creating
+# or nesting one), then it writes the bus and claims the lead -- repo + bus + lead
+# in one idempotent call. `init` is the paneless primitive beneath it (named buses,
+# headless e2e); it only writes the bus, and assumes the dir already exists.
+CWD_COMMANDS = frozenset({"bootstrap", "init"})
 
 # Never `build.sh`: it deploys shared libraries into the game directory before
 # compiling, and a grunt is an unattended process with an unrestricted shell.
@@ -114,6 +119,13 @@ def _digest(msg: dict) -> str:
 
 
 def cmd_init(args, root):
+    """PLUMBING, hidden from `--help`. Write the bus at `root` WITHOUT a lead pane
+    or any git setup -- it assumes the directory already exists. `bootstrap` is the
+    porcelain users run: it does the git-init/pin and then claims the lead. `init`
+    stays for the two workflows that need a paneless bus: named buses (`init --bus
+    auth` -- several independent teams in one repo, each led separately), and the
+    headless end-to-end tests. Resolved to cwd, never `repo_root()`, so a bare
+    `team init` writes here and can never climb to $HOME the way it once did."""
     for line in config.init(root, force=args.force):
         print(line)
     busname = bus.resolve_bus_name(getattr(args, "bus", None))
@@ -126,29 +138,53 @@ def cmd_init(args, root):
     return OK
 
 
-def _guard_init_location(cmd: str, root: Path, cwd: Path | None = None) -> None:
-    """`team init` writes the bus at the enclosing git repo root. When that root
-    is ABOVE the cwd the bus lands where the user did not mean -- and the whole of
-    $HOME is a git repo, so a scratch dir under it resolves to $HOME. Measured:
-    `team init` in ~/teamTest created ~/.team and rewrote the global ~/.qwen. The
-    invocation dir is the project; refuse and name the command that makes it one.
-    Only `init` is guarded -- `down` must still reach such a bus to tear it down.
-    """
-    if cmd != "init":
-        return
-    cwd = (cwd or Path.cwd()).resolve()
-    if root.resolve() == cwd:
-        return
-    home = (f"\n{root} is your HOME directory -- a bus there scatters grunt "
-            f"worktrees across it and rewrites your global ~/.qwen. Never there."
-            if root.resolve() == Path.home().resolve() else "")
-    raise StateError(
-        f"you are in {cwd}, but the git repo enclosing it is {root}, so "
-        f"`team init` would create the bus at {root}, not here. Make this "
-        f"directory its own project instead:\n"
-        f"  team bootstrap --here   # git-init {cwd} and set up the bus here\n"
-        f"or `cd {root} && team init` if that repo really is the project.{home}"
-    )
+def _pin_repo_here(root: Path, wt) -> tuple[list[str], str]:
+    """Make `root` -- the directory the user ran `bootstrap` in -- the git
+    repo the bus will live in, so the bus can NEVER resolve above where they stand.
+
+    The rule is absolute (the user has said so, repeatedly): everything lives WHERE
+    YOU START IT. `repo_root()`/`bus_root()` walk UP, so without pinning, a bus in a
+    scratch dir under a bigger repo resolves to that parent -- and all of $HOME is a
+    git repo, so `team init` in ~/teamTest wrote ~/.team and rewrote the global
+    ~/.qwen. Three cases:
+
+      - no repo anywhere        -> `git init` here.
+      - inside a bigger repo    -> `git init` here anyway (nested; git treats the
+                                   inner .git as the boundary, so every verb resolves
+                                   here, never climbing to the parent). Returns a
+                                   notice -- a call made on the user's behalf.
+      - `root` IS a repo root   -> nothing to do.
+
+    Then guarantees a HEAD (an empty first commit) so a grunt worktree can check one
+    out later. Returns (actions_done, notice_or_empty)."""
+    actions: list[str] = []
+    notice = ""
+    top = wt.toplevel(root)
+    if top is None:
+        wt.init_repo(root)
+        actions.append(f"git init {root}")
+    elif top.resolve() != root:
+        wt.init_repo(root)
+        actions.append(f"git init {root} (its own repo, nested inside {top})")
+        home = (f" {top} is your HOME directory, so a bus there would scatter grunt "
+                f"worktrees across it and rewrite your global ~/.qwen -- kept here "
+                f"instead." if top.resolve() == Path.home().resolve() else "")
+        notice = (f"NOTE: {root} is inside the git repo at {top}. The bus must live "
+                  f"where you started it, so {root} is now its own repo and the bus "
+                  f"lands HERE, not at {top}.{home}\n"
+                  f"If you meant the bus at the enclosing repo, run from there "
+                  f"instead:\n  cd {top}")
+    if not wt.has_commit(root):
+        try:
+            wt.empty_commit(root, "team: first commit")
+        except worktrees.WorktreeError as exc:
+            raise StateError(
+                f"could not create the first commit: {exc}\n"
+                f"A worktree cannot check out an unborn HEAD. If git is asking who "
+                f"you are, set user.email and user.name and re-run."
+            ) from exc
+        actions.append("created an empty first commit")
+    return actions, notice
 
 
 def cmd_brief(args, root):
@@ -209,45 +245,13 @@ def cmd_bootstrap(args, root, p=None):
     """
     p = p if p is not None else panes.Panes()
     wt = worktrees.Worktrees()
-    actions: list[str] = []
 
-    top = wt.toplevel(root)
-    if top is None:
-        wt.init_repo(root)
-        actions.append(f"git init {root}")
-    elif top.resolve() != root:
-        # cwd is inside an existing repo. `bus_root()` walks up, so a bus written
-        # here would still resolve to {top}, and grunt worktrees would land at
-        # {top} -- not what someone who ran this *here* meant. Two honest choices,
-        # and we refuse to guess between them rather than silently pick {top}:
-        #   --here        -> the invocation dir IS the project: git-init it as its
-        #                    own repo (nested inside {top} is fine -- git treats the
-        #                    inner .git as the boundary, so every verb now resolves
-        #                    to here and never climbs to {top}).
-        #   cd {top}      -> the enclosing repo is the project; bootstrap there.
-        if getattr(args, "here", False):
-            wt.init_repo(root)
-            actions.append(f"git init {root} (its own repo, nested inside {top})")
-        else:
-            home = f"\n{top} is your HOME directory -- never put a bus there; use " \
-                   f"--here." if top.resolve() == Path.home().resolve() else ""
-            raise StateError(
-                f"{root} is inside the git repository at {top}, so the bus would "
-                f"resolve to {top}, not here. Pick one:\n"
-                f"  team bootstrap --here        # make {root} its own repo, bus here\n"
-                f"  cd {top} && team bootstrap   # bus at the repo root{home}"
-            )
-
-    if not wt.has_commit(root):
-        try:
-            wt.empty_commit(root, "team: bootstrap")
-        except worktrees.WorktreeError as exc:
-            raise StateError(
-                f"could not create the first commit: {exc}\n"
-                f"A worktree cannot check out an unborn HEAD. If git is asking "
-                f"who you are, set user.email and user.name and re-run."
-            ) from exc
-        actions.append("created an empty first commit")
+    # Pin the repo here: the bus lives WHERE YOU STARTED IT, never up the tree. The
+    # notice (a nested `git init` done on the user's behalf) is suppressed only when
+    # they asked for it explicitly with --here.
+    actions, notice = _pin_repo_here(root, wt)
+    if notice and not getattr(args, "here", False):
+        print("\n" + notice, file=sys.stderr)
 
     if not bus.team_dir(root).exists() or args.force:
         actions += config.init(root, force=args.force)
@@ -260,6 +264,15 @@ def cmd_bootstrap(args, root, p=None):
         print(f"\nwarning: `team` is not on PATH. A grunt calls it, and gets it "
               f"from the pane env -- but you will want it too:\n"
               f"    ln -s {TEAM_BIN} ~/.local/bin/team", file=sys.stderr)
+
+    busname = bus.resolve_bus_name(getattr(args, "bus", None))
+    if busname != bus.TEAM:
+        # A named bus. The lead's later shell commands need to know which one; the
+        # cleanest handoff is one exported var its whole shell picks up, so
+        # `team send`/`verify`/`wait` need no repeated --bus.
+        print(f"\nnamed bus {busname} is live. Adopt it in this shell so every "
+              f"later `team` command targets it:\n    export TEAM_BUS={busname}",
+              file=sys.stderr)
 
     return cmd_up(args, root, p=p)
 
@@ -619,6 +632,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--bus", default=None, metavar="SLUG",
         help="address the named bus .team-<slug> (default: .team, or $TEAM_BUS)")
 
+    # PLUMBING beneath `bootstrap` (the porcelain): a paneless bus for named buses
+    # and headless e2e. No `help=`, so it carries no description line in `--help` --
+    # only `bootstrap` does -- and a user scanning the help meets one setup verb.
     p = sub.add_parser("init", parents=[bus_parent])
     p.add_argument("--force", action="store_true")
     p.set_defaults(fn=cmd_init)
@@ -641,7 +657,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     for verb, fn, helptext in (
         ("up", cmd_up, "register the lead pane; optionally add grunts"),
-        ("bootstrap", cmd_bootstrap, "git init + commit + team init + team up"),
+        ("bootstrap", cmd_bootstrap, "the setup verb: git init + commit + bus + "
+                                     "become lead, all pinned to THIS directory"),
     ):
         p = sub.add_parser(verb, help=helptext, parents=[bus_parent])
         p.add_argument("grunts", nargs="?", type=int, default=0)
@@ -658,9 +675,10 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--command", default="qwen", help="grunt binary")
         if verb == "bootstrap":
             p.add_argument("--here", action="store_true",
-                           help="bootstrap in THIS directory even when it sits "
-                                "inside another git repo: git-init it (nested) and "
-                                "put the bus here, instead of refusing")
+                           help="silence the notice when THIS directory sits inside "
+                                "another git repo: bootstrap nests a repo here and "
+                                "pins the bus here either way; --here says you meant "
+                                "that, so the explanatory NOTE is suppressed")
         p.set_defaults(fn=fn)
 
     g = sub.add_parser("grunt").add_subparsers(dest="gcmd", required=True)
@@ -781,11 +799,10 @@ def main(argv: list[str]) -> int:
             return args.fn(args, None)
         if args.root:
             root = Path(args.root).resolve()
-        elif args.cmd in CWD_COMMANDS:
+        elif args.cmd in CWD_COMMANDS:          # init, bootstrap -> pin the cwd
             root = Path.cwd().resolve()
-        elif args.cmd in PRE_BUS_COMMANDS:
+        elif args.cmd in PRE_BUS_COMMANDS:      # down -> find the bus above
             root = bus.repo_root()
-            _guard_init_location(args.cmd, root)
         else:
             root = bus.bus_root()
         return args.fn(args, root)

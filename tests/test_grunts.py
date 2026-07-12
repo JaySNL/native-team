@@ -362,15 +362,28 @@ class BootstrapTest(unittest.TestCase):
         self.assertTrue(worktrees.Worktrees().has_commit(self.root))
         self.assertEqual(sorted(bus.read_json(bus.roster_path(self.root))), ["lead"])
 
-    def test_it_refuses_a_directory_inside_another_repo(self):
-        """`bus_root()` walks up. A nested `git init` would leave every other
-        verb addressing the parent's bus."""
+    def test_inside_another_repo_it_auto_applies_here_and_says_so(self):
+        """`bus_root()` walks up, so a bus at a nested cwd would resolve to the
+        parent and scatter worktrees there. The rule is absolute -- the bus lives
+        WHERE YOU STARTED -- so bootstrap git-inits the nested dir as its own repo
+        (that is `--here`) rather than refuse-and-wait, and TELLS the user it did,
+        naming the `cd {top}` alternative."""
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         sub = self.root / "nested"
         sub.mkdir()
-        with self.assertRaisesRegex(StateError, "inside the git repository"):
-            self._boot(root=sub)
-        self.assertFalse((sub / ".git").exists())
+        args = type("A", (), dict(grunts=0, session="s", lead_pane=None,
+                                  force=False, timeout=1.0, command="sh",
+                                  lead_command="sh", here=False))()
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            rc = cli.cmd_bootstrap(args, sub, p=self.p)
+        self.assertEqual(rc, cli.OK)
+        self.assertTrue((sub / ".git").is_dir())            # its own repo now
+        self.assertTrue((sub / ".team").is_dir())           # bus lives here
+        self.assertFalse((self.root / ".team").exists())    # parent left alone
+        msg = err.getvalue()
+        self.assertIn("NOTE:", msg)                         # it told the user
+        self.assertIn("cd", msg)                            # named the alternative
 
     def test_here_bootstraps_a_nested_dir_as_its_own_project(self):
         """--here: the invocation dir IS the project. It git-inits nested, so the
@@ -449,24 +462,49 @@ class OwnBusGuard(unittest.TestCase):
                 api.send(self.root, "grunt1", question="q", scope=["src"])
 
 
-class InitLocationGuard(unittest.TestCase):
-    """`team init` must never write the bus above the cwd. The whole of $HOME is a
-    git repo, so `team init` in ~/teamTest resolved repo_root=$HOME and created
-    ~/.team plus rewrote the global ~/.qwen. It now refuses, pointing at
-    `bootstrap --here`; only `down` may still reach a bus above the cwd."""
+class PinRepoHere(unittest.TestCase):
+    """`_pin_repo_here` is the shared rule behind `bootstrap`: the bus lives WHERE
+    YOU START IT, never up the tree. The whole of $HOME is a git repo, so setup in
+    ~/teamTest used to resolve to $HOME and create ~/.team plus rewrite the global
+    ~/.qwen. It now pins the cwd as its own repo -- creating one, or nesting one
+    inside a bigger enclosing repo -- so the bus can never climb out of it. The
+    end-to-end pin-here + tell behaviour is covered by BootstrapTest; this pins the
+    per-case wording the CLI depends on."""
 
-    def test_refuses_when_the_repo_root_is_above_the_cwd(self):
-        with self.assertRaisesRegex(StateError, "would create the bus at"):
-            cli._guard_init_location("init", Path("/repo"),
-                                     cwd=Path("/repo/scratch"))
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
 
-    def test_allows_init_at_the_repo_root(self):
-        cli._guard_init_location("init", Path("/repo"), cwd=Path("/repo"))  # no raise
+    def test_a_bare_directory_is_git_inited_with_no_notice(self):
+        actions, notice = cli._pin_repo_here(self.root, worktrees.Worktrees())
+        self.assertTrue((self.root / ".git").is_dir())     # made the repo
+        self.assertEqual(notice, "")                       # nothing done behind them
 
-    def test_does_not_guard_down(self):
-        cli._guard_init_location("down", Path("/repo"), cwd=Path("/repo/scratch"))
+    def test_nested_in_a_bigger_repo_it_pins_here_and_names_the_alternative(self):
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        sub = self.root / "scratch"
+        sub.mkdir()
+        _actions, notice = cli._pin_repo_here(sub, worktrees.Worktrees())
+        self.assertTrue((sub / ".git").is_dir())           # its own repo, nested
+        self.assertIn("NOTE:", notice)                     # it told the user
+        self.assertIn("cd", notice)                        # named the alternative
+        self.assertIn(str(self.root), notice)              # the enclosing repo
 
-    def test_the_home_case_names_the_danger(self):
-        home = Path.home()
-        with self.assertRaisesRegex(StateError, "HOME directory"):
-            cli._guard_init_location("init", home, cwd=home / "teamTest")
+    def test_at_a_repo_root_there_is_nothing_to_pin(self):
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        for k, v in (("user.email", "t@t.t"), ("user.name", "t")):
+            subprocess.run(["git", "config", k, v], cwd=self.root, check=True)
+        _actions, notice = cli._pin_repo_here(self.root, worktrees.Worktrees())
+        self.assertEqual(notice, "")
+
+    def test_the_home_case_warns_about_the_global_qwen(self):
+        """Nested under $HOME the notice must name the specific danger: a bus at
+        $HOME rewrites the global ~/.qwen."""
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        sub = self.root / "teamTest"
+        sub.mkdir()
+        with mock.patch.object(Path, "home", return_value=self.root):
+            _actions, notice = cli._pin_repo_here(sub, worktrees.Worktrees())
+        self.assertIn("HOME directory", notice)
+        self.assertIn("~/.qwen", notice)

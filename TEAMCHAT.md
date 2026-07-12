@@ -232,10 +232,13 @@ pane rooted anywhere else is a pane whose file tools address YOUR tree.
 them when a task needs one; remove them when it does not. Each costs a worktree
 (0.1s, ~24MB on a 35MB repo) and a running model.
 
-In a directory that is not yet a repo, `team bootstrap` does the `git init`, the
-first commit, `team init` and `team up` in one idempotent call. It refuses if the
-directory sits inside another git repo — `bus_root()` walks up, so a nested repo
-would leave every verb addressing the parent's bus.
+`team bootstrap` is the one setup verb: `git init` + first commit + bus + `team up`
+in one idempotent call, all pinned to **this** directory. The bus lives where you
+start it, never up the tree. If the directory sits inside a bigger git repo,
+`bootstrap` does not refuse and does not write the bus to the parent — it git-inits
+**here** (nested; the inner `.git` is the boundary, so every verb resolves here)
+and prints a `NOTE:` telling you it did, naming `cd <parent>` if the parent was
+what you meant. Pass `--here` to say you meant here and silence the notice.
 
 ---
 
@@ -246,5 +249,5 @@ team down            # refuses if a grunt worktree holds uncollected work
 team down --force    # discards it
 ```
 
-`down` restores the `.qwen/settings.json` that `init` replaced. Until you run
+`down` restores the `.qwen/settings.json` that `bootstrap` replaced. Until you run
 it, your own `qwen` in this repo runs in YOLO mode without its context files.
