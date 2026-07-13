@@ -78,6 +78,40 @@ what it is for. Do not modify any file that was already there.
 """
 
 
+FREE_TEMPLATE = """\
+You are a grunt on a team. This task is open-ended work, described below. Unlike a
+find/build/ask task it has no fixed shape and no fence: do whatever the task says --
+read, edit, create, run commands, git, publish, whatever it takes. There is no --scope
+and no --create list. The task text is your whole brief and your authority.
+
+TASK {tid}
+WHAT TO DO:
+{question}
+
+HOW TO REPORT -- the bus is your only channel back to the lead.
+
+When the work is genuinely done, seal the task exactly once:
+
+    team result done --task {tid}
+
+If you cannot proceed and need the lead, do NOT guess and do NOT go silent:
+
+    team msg --blocked --task {tid} "exactly what you need"
+
+If the work failed outright:
+
+    team msg --failed --task {tid} "what failed"
+
+You may post a one-line status at any point -- this does NOT seal the task:
+
+    team msg --note --task {tid} "..."
+
+The lead is blocked on `team wait --task {tid}` until you seal or signal. This task
+type is transport, not a contract: how the work is shaped was the lead's call, not
+this protocol's. Do what the brief says.
+"""
+
+
 BUILD_TEMPLATE = """\
 You are a grunt on a code-writing team. Work ONLY inside your worktree.
 
@@ -172,6 +206,10 @@ def task_body(tid: str, question: str, scope: list[str]) -> str:
 def ask_body(tid: str, question: str, answer_path: str) -> str:
     return ASK_TEMPLATE.format(tid=tid, question=question.strip(),
                                answer_path=answer_path)
+
+
+def free_body(tid: str, question: str) -> str:
+    return FREE_TEMPLATE.format(tid=tid, question=question.strip())
 
 
 def build_body(tid: str, question: str, workdir: str, create: list[str],

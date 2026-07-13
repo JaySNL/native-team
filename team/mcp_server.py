@@ -57,7 +57,7 @@ TOOLS = [
                                 "description": "dispatch even though a scope path "
                                                "is uncommitted; the grunt reads "
                                                "the committed version"},
-                "kind": {"type": "string", "enum": ["find", "build", "ask"],
+                "kind": {"type": "string", "enum": ["find", "build", "ask", "free"],
                          "description": "find (cite code, default), build "
                                         "(write code), or ask (answer a question "
                                         "from your own knowledge, no scope)"},

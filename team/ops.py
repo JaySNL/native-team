@@ -238,7 +238,7 @@ def task_kind(root: Path, agent: str, tid: str) -> str:
     if not path.is_file():
         return "find"          # hand-driven bus, or a reply; assume citations
     kind = bus.read_json(path).get("kind")
-    return {"ask": "ask", "build": "build"}.get(kind, "find")
+    return {"ask": "ask", "build": "build", "free": "free"}.get(kind, "find")
 
 
 def result_done(root: Path, tid: str, agent: str, reaped: bool = False) -> str | None:
@@ -267,7 +267,7 @@ def result_done(root: Path, tid: str, agent: str, reaped: bool = False) -> str |
     # temp-0 grunt copied bytes, built clean, then spiralled -- it was told to
     # `result done`, which refused for want of a citation it had no basis to make.)
     if not staging.exists():
-        if kind != "build":
+        if kind not in ("build", "free"):
             raise StateError(_nothing_to_seal(tid, kind))
         payload = {"records": []}
     else:
@@ -319,6 +319,9 @@ def result_done(root: Path, tid: str, agent: str, reaped: bool = False) -> str |
     if kind == "ask":
         return post_message(root, agent, "result", tid,
                             f"answer sealed; read it with `team answer {tid}`")
+    if kind == "free":
+        return post_message(root, agent, "result", tid,
+                            f"work sealed; task {tid} done")
     if kind == "build" and not records:
         return post_message(root, agent, "result", tid,
                             f"build sealed; run `team verify {tid}`")
@@ -346,6 +349,42 @@ def _nothing_to_seal(tid: str, kind: str) -> str:
 
 def _porcelain(root: Path, agent: str, wt) -> list[str]:
     return sorted(wt.dirty(root, agent))
+
+
+def compose_free_task(root: Path, agent: str, question: str,
+                      supersede: bool = False) -> str:
+    """Dispatch open-ended work through the bus: a real task id with a seal and a
+    wait, but none of the find/build/ask contract.
+
+    The bus is transport; the three typed protocols are one opinionated shape
+    laid over it. A task that edits existing files, runs git, or publishes fits
+    none of them (find is read-only, build creates new files only, ask forbids
+    file access) -- so that work used to bypass the bus entirely and the lead
+    had to poll a pane for completion. A free task carries only the task text
+    plus the seal/block/note contract, so any work can ride the bus and the lead
+    can `team wait --task <tid>` on its seal like any other. There is no scope
+    fence and no --create list: how the work is shaped is the lead's call.
+    """
+    open_tid = bus.open_task(root, agent)
+    if open_tid and not supersede:
+        raise StateError(
+            f"{agent} already has open task {open_tid}. "
+            f"Pass --supersede to kill it, or wait for its result."
+        )
+    if open_tid:
+        bus.mark_dead(root, open_tid)
+
+    tid = bus.alloc_id(root)
+    bus.write_json(bus.task_path(root, agent, tid), {
+        "id": tid,
+        "kind": "free",
+        "to": agent,
+        "from": "lead",
+        "question": question,
+        "scope": [],
+        "protocol": protocol.free_body(tid, question),
+    })
+    return tid
 
 
 def compose_build_task(root: Path, agent: str, question: str,

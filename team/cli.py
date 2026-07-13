@@ -646,6 +646,11 @@ def cmd_verify(args, root):
         print(f"ask {args.task}: NOTHING TO VERIFY — 0 citations. "
               f"An ask answer is not a claim about the code; read it with "
               f"`team answer {args.task}`.")
+    elif r.kind == "free":
+        # A free task's proof is the work itself (a commit, an upload, an edit),
+        # not a citation this tool can re-open. Sealing it IS the completion.
+        print(f"free {args.task}: NOTHING TO VERIFY — sealed on the work itself. "
+              f"Check the real artefacts it produced (git log, the pushed change).")
     elif r.kind == "build":
         print(buildverify.render(r.build))
         # No citations, or a task-level failure that left no sound tree to
@@ -752,7 +757,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="find: dispatch even though a --scope path is "
                         "uncommitted; the grunt reads the committed version")
     p.add_argument("--reply", metavar="MSG_ID")
-    p.add_argument("--type", choices=["find", "build", "ask"], default="find",
+    p.add_argument("--type", choices=["find", "build", "ask", "free"], default="find",
                    help="ask: a question with no source; the grunt answers from "
                         "its own knowledge and takes no --scope")
     p.add_argument("--create", action="extend", nargs="+", default=[],

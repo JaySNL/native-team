@@ -104,12 +104,14 @@ class VerifyResult:
 
     @property
     def verifiable(self) -> bool:
-        """An ask task carries no claim about any file. Nothing to re-open."""
-        return self.kind != "ask"
+        """An ask or free task carries no citation about any file. Nothing to
+        re-open -- a free task's proof is the work it did (a commit, an upload),
+        not a claim this tool can re-read."""
+        return self.kind not in ("ask", "free")
 
     @property
     def ok(self) -> bool:
-        if self.kind == "ask":
+        if self.kind in ("ask", "free"):
             return True                        # nothing failed; nothing passed
         if self.build is not None:
             return not self.build.failed and not verify.any_failed(self.verdicts)
@@ -173,6 +175,8 @@ def send(root: Path, agent: str, *, question: str = "", scope=(),
             root, agent, question, list(create), build_dir,
             list(build_cmd) if build_cmd else list(DEFAULT_BUILD_CMD),
             replace=replace, attach_dir=attach_dir)
+    elif kind == "free":
+        tid = ops.compose_free_task(root, agent, question, supersede=supersede)
     else:
         tid = ops.compose_task(root, agent, question, list(scope),
                                supersede=supersede, allow_dirty=allow_dirty)
@@ -212,6 +216,8 @@ def verify_task(root: Path, task: str) -> VerifyResult:
     """
     if not buildverify.is_build_task(root, task):
         payload = bus.read_json(bus.result_path(root, task))
+        if payload.get("kind") == "free":
+            return VerifyResult(task, "free", [])
         if payload.get("kind") == "ask" or payload.get("answer") is not None:
             return VerifyResult(task, "ask", [], answer=payload.get("answer"))
         return VerifyResult(task, "find",
